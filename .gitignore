@@ -1,0 +1,14 @@
+# colcon / python
+build/
+install/
+log/
+__pycache__/
+*.pyc
+.venv/
+# never commit: face data, keys, tokens, flash dumps (may contain WiFi credentials), recovery dumps
+*.enc
+*.key
+.env
+faces/
+recovered/
+*.bin

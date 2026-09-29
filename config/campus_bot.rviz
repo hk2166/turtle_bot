@@ -1,0 +1,111 @@
+# RECONSTRUCTED layout (2026-09-30): map, masked scan, TF, Nav2 costmaps/plan. "2D Goal Pose" = Nav2 goal.
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 40
+      Color: 160; 160; 164
+    - Class: rviz_default_plugins/Map
+      Name: Map
+      Enabled: true
+      Topic:
+        Value: /map
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Color Scheme: map
+      Alpha: 0.8
+    - Class: rviz_default_plugins/Map
+      Name: Global costmap (Nav2)
+      Enabled: true
+      Topic:
+        Value: /global_costmap/costmap
+        Reliability Policy: Reliable
+      Color Scheme: costmap
+      Alpha: 0.3
+    - Class: rviz_default_plugins/Map
+      Name: Local costmap (Nav2)
+      Enabled: true
+      Topic:
+        Value: /local_costmap/costmap
+        Reliability Policy: Reliable
+      Color Scheme: costmap
+      Alpha: 0.5
+    - Class: rviz_default_plugins/LaserScan
+      Name: Scan (columns masked)
+      Enabled: true
+      Topic:
+        Value: /scan_filtered
+        Reliability Policy: Best Effort
+      Size (m): 0.04
+      Style: Flat Squares
+      Color Transformer: FlatColor
+      Color: 255; 40; 40
+    - Class: rviz_default_plugins/LaserScan
+      Name: Scan raw (check the mask)
+      Enabled: false
+      Topic:
+        Value: /scan
+        Reliability Policy: Best Effort
+      Size (m): 0.03
+      Style: Flat Squares
+      Color Transformer: FlatColor
+      Color: 255; 200; 0
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: true
+      Marker Scale: 0.4
+    - Class: rviz_default_plugins/Polygon
+      Name: Footprint
+      Enabled: true
+      Topic:
+        Value: /local_costmap/published_footprint
+      Color: 0; 200; 255
+    - Class: rviz_default_plugins/Path
+      Name: Plan
+      Enabled: true
+      Topic:
+        Value: /plan
+      Color: 0; 220; 0
+    - Class: rviz_default_plugins/PoseArray
+      Name: AMCL particles
+      Enabled: true
+      Topic:
+        Value: /particle_cloud
+        Reliability Policy: Best Effort
+      Arrow Length: 0.1
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 15
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/Measure
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Current View
+      Scale: 40
+      X: 0
+      Y: 0
+    Saved: ~
+Window Geometry:
+  Width: 1400
+  Height: 900

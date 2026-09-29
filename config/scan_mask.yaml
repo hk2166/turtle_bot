@@ -1,0 +1,11 @@
+# RECONSTRUCTED from RECOVERY.md (2026-09-30). The original sector angles were lost.
+# Column mask for scan_filter.py: angular sectors (degrees, in the `laser` frame, -180..180) whose
+# returns are thrown away because the 4× 2020 columns cross the scan plane at ~215 mm.
+# The last session's all-green state was 52.0 beams masked, 0 leaks.
+#
+# EMPTY UNTIL CALIBRATED ON THE ROBOT. Park it ≥ 1 m from everything, then run:
+#     python3 tools/calibrate_mask.py        (with run/remap.sh running, or just the bring-up)
+# That rewrites this file with the measured sectors.
+calibrated: false
+sectors: []
+#  - [start_deg, end_deg]
