@@ -63,10 +63,13 @@ def main():
     tf_buf = Buffer(cache_time=Duration(seconds=10))
     TransformListener(tf_buf, node)
 
-    # Give discovery a moment so topic lookups see the ESP32's topics.
-    t_end = time.monotonic() + 2.0
-    while time.monotonic() < t_end:
+    # Give discovery a moment so topic lookups see the ESP32's topics (at least 2 s, up to 6 s
+    # while the odom topic is still missing).
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 6.0:
         rclpy.spin_once(node, timeout_sec=0.1)
+        if time.monotonic() - t0 > 2.0 and find_topic(node, env.get('ODOM_TOPIC', '/odom'), 'nav_msgs/msg/Odometry'):
+            break
 
     scan_t = env.get('SCAN_TOPIC', '/scan')
     filt_t = env.get('SCAN_FILTERED_TOPIC', '/scan_filtered')

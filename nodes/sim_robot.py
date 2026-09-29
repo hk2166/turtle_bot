@@ -7,7 +7,9 @@ micro-ROS agent.
 Publishes what the real robot does:
   /scan          LaserScan, 10 Hz, 500 beams, frame `laser`, 12 m range, including the 4 column
                  slivers (so the mask and preflight are exercised)
-  /odom          Odometry, 20 Hz, with a few % wheel-slip error (so SLAM has real work to do)
+  /odom          Odometry, 20 Hz: distance 3% over-read, heading from the gyro (so SLAM has real work)
+                 Turns are only 85% efficient (carpet slip), like the real robot's turn-slip problem.
+  /sim/ground_truth  the true pose (Odometry), for checking tools such as calibrate_odom.py
   /imu/data_raw  Imu, 20 Hz, gyro with noise
 Subscribes /cmd_vel (Twist) with the firmware's 300 ms watchdog and 0.5 m/s² ramp.
 Does NOT broadcast odom → base_link TF (remap.sh then starts odom_to_tf.py, like it may on the robot).
@@ -51,15 +53,16 @@ class SimRobot(Node):
         self.beams = 500
         self.x, self.y, self.th = 0.0, 0.0, 0.0             # true pose
         self.ox, self.oy, self.oth = 0.0, 0.0, 0.0          # odometry estimate
-        self.v = self.w = 0.0
+        self.v = self.w = self.w_true = 0.0
         self.cmd = (0.0, 0.0)
         self.last_cmd = -1.0
         self.slip_lin = 1.03                                 # odom over-reads distance by 3%
-        self.slip_ang = 0.97
+        self.turn_eff = 0.85                                 # carpet: wheels turn the robot only 85% as far
         self.create_subscription(Twist, '/cmd_vel', self.on_cmd, 10)
         self.scan_pub = self.create_publisher(LaserScan, '/scan', 10)
         self.odom_pub = self.create_publisher(Odometry, '/odom', 10)
         self.imu_pub = self.create_publisher(Imu, '/imu/data_raw', 10)
+        self.truth_pub = self.create_publisher(Odometry, '/sim/ground_truth', 10)   # for testing tools
         self.dt = 0.02
         self.create_timer(self.dt, self.step)
         self.create_timer(0.1, self.publish_scan)
@@ -92,9 +95,12 @@ class SimRobot(Node):
             self.v = 0.0
         else:
             self.x, self.y = nx, ny
-        self.th += self.w * self.dt
+        w_true = self.w * self.turn_eff
+        self.th += w_true * self.dt
+        self.w_true = w_true
+        # Odometry: distance from wheel steps (with scale error), heading from the gyro (like the firmware).
         ov = self.v * self.slip_lin * (1 + random.gauss(0, 0.01))
-        ow = self.w * self.slip_ang + random.gauss(0, 0.002)
+        ow = w_true + random.gauss(0, 0.002)
         self.oth += ow * self.dt
         self.ox += ov * math.cos(self.oth) * self.dt
         self.oy += ov * math.sin(self.oth) * self.dt
@@ -140,10 +146,15 @@ class SimRobot(Node):
         imu = Imu()
         imu.header.stamp, imu.header.frame_id = now, 'imu'
         imu.orientation_covariance[0] = -1.0
-        imu.angular_velocity.z = self.w + random.gauss(0, 0.003)
+        imu.angular_velocity.z = self.w_true + random.gauss(0, 0.003)
         imu.angular_velocity.x, imu.angular_velocity.y = random.gauss(0, 0.003), random.gauss(0, 0.003)
         imu.linear_acceleration.z = 9.81 + random.gauss(0, 0.02)
         self.imu_pub.publish(imu)
+        g = Odometry()
+        g.header.stamp, g.header.frame_id, g.child_frame_id = now, 'map', 'base_link'
+        g.pose.pose.position.x, g.pose.pose.position.y = self.x, self.y
+        g.pose.pose.orientation.z, g.pose.pose.orientation.w = math.sin(self.th / 2), math.cos(self.th / 2)
+        self.truth_pub.publish(g)
 
 
 def main():
