@@ -101,6 +101,12 @@ else
     exit 1
   fi
 fi
+# Foxglove on the Mac/phone (README → Remote access): a websocket bridge on port 8765. Optional:
+# installed by  sudo apt install ros-jazzy-foxglove-bridge
+if ros2 pkg prefix foxglove_bridge >/dev/null 2>&1 && ! is_running foxglove; then
+  start_bg foxglove ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
+  ok "Foxglove bridge on ws://$(hostname).local:8765 (view/drive from the Mac, no VNC)"
+fi
 if wait_topic "$ODOM_TOPIC" 8; then ok "$ODOM_TOPIC live (ESP32 connected)"
 elif (( SIM )); then err "No $ODOM_TOPIC from sim_robot.py: see $LOG_DIR/bringup.log"; exit 1
 else

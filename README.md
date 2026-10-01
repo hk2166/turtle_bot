@@ -109,6 +109,13 @@ Logs go to `~/.campus_bot/logs/<name>.log` (bringup, slam, nav, rviz, odom_tf, m
   extended desktop (no top bar); a login script mirrors it onto the main screen as a fallback.
   (GNOME's built-in Desktop Sharing, RDP on port 3390, authenticates but then stalls with the Mac
   "Windows App" client — seen on 11.4.0, 2026-10-01 — so it is disabled: `grdctl rdp disable`.)
+- **Robot dashboard on the Mac (Foxglove, better than RViz-over-VNC):** once, on the robot:
+  `sudo apt install ros-jazzy-foxglove-bridge && sudo ufw allow 8765/tcp`. The bridge then starts with
+  every `run/remap.sh` / `run/nav.sh`. On the Mac: install the free Foxglove app (foxglove.dev/download),
+  Open connection → **Foxglove WebSocket** → `ws://resp-desktop.local:8765`. Add a **3D panel**: turn on
+  `/map`, `/scan_filtered`, `/plan` and the TF frames. Its toolbar has **Pose estimate** (publish to
+  `/initialpose`) and **Publish pose** (`/goal_pose`) — the same "where am I" + "go there" clicks as
+  RViz, but native on the Mac instead of screen-shared.
 - **Code:** VS Code on the Mac → Remote-SSH → `resp@resp-desktop.local` → open `~/Desktop/campus_bot_fw`.
 - **Driving:**
   - In remote desktop, `run/drive.sh` opens the hold-to-drive window. It **stops by itself if the link

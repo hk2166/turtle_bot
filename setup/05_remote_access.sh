@@ -109,7 +109,8 @@ fi
 log "Firewall"
 if ufw status 2>/dev/null | grep -q 'Status: active'; then
   ufw allow 22/tcp >/dev/null; ufw allow 3389/tcp >/dev/null; ufw allow 5900/tcp >/dev/null
-  ok "ufw: 22 (SSH), 3389 (xrdp) and 5900 (VNC) open"
+  ufw allow 8765/tcp >/dev/null
+  ok "ufw: 22 (SSH), 3389 (xrdp), 5900 (VNC) and 8765 (Foxglove) open"
 else
   info "ufw not active: nothing to open"
 fi
