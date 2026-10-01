@@ -9,8 +9,8 @@ events from the desktop:
   key down  → drive          key up  → stop          window loses focus → stop
 
   ↑ / W  forward      ↓ / S  reverse      ← / A  turn left      → / D  turn right
-  hold two (e.g. ↑ + ←) to arc            SPACE  stop now        + / -  speed ±0.05 m/s
-  Esc or closing the window: stop and quit
+  hold two (e.g. ↑ + ←) to arc            SPACE  stop (keys held at the time stay ignored until let go)
+  + / -  speed ±0.05 m/s                  Esc or closing the window: ramp to a stop, then quit
 
 Starting and stopping follow the tower-stability ramp (≤ 0.5 m/s²), so "stop" takes up to about
 half a second from full mapping speed. That is the hard limit in CLAUDE.md, not a timer. While
@@ -67,6 +67,8 @@ class HoldDrive:
         self.bumper = False
         self.odom = None
         self.closing = False
+        self.close_deadline = 0.0
+        self.blocked = set()    # keys still held when SPACE was pressed: ignored until really released
 
         rclpy.init()
         self.node = rclpy.create_node('drive_hold')
@@ -126,11 +128,17 @@ class HoldDrive:
         k = e.keysym.lower()
         if k in self.pending_release:              # auto-repeat: the "release" was fake
             self.root.after_cancel(self.pending_release.pop(k))
+        if self.closing:
+            return
         if k in KEYS:
-            self.held.add(k)
+            if k not in self.blocked:
+                self.held.add(k)
         elif k == 'space':
+            # Stop: drop every target and block the keys still held (their auto-repeat would restart
+            # the robot) until they're really released. The loop ramps to zero at ≤ 0.5 m/s², not a
+            # step to zero, which would be the tip-over risk the ramp exists for.
+            self.blocked |= self.held
             self.held.clear()
-            self.v = self.w = 0.0                  # stop request: drop the target now
         elif k in ('plus', 'equal', 'kp_add'):
             self.speed = min(self.max_lin, round(self.speed + 0.05, 2))
         elif k in ('minus', 'kp_subtract'):
@@ -146,6 +154,7 @@ class HoldDrive:
     def _really_released(self, k):
         self.pending_release.pop(k, None)
         self.held.discard(k)
+        self.blocked.discard(k)
 
     def release_all(self):
         for job in self.pending_release.values():
@@ -180,6 +189,9 @@ class HoldDrive:
             self.pub.publish(msg)
             if not moving:
                 self.quiet -= 1
+        if self.closing and (not moving or now > self.close_deadline):
+            self._finish()
+            return
         self.draw(moving)
         self.root.after(int(1000 / RATE_HZ), self.tick)
 
@@ -201,10 +213,15 @@ class HoldDrive:
         self.status.config(text='\n'.join(lines), fg='#dddddd' if listeners else '#ff9050')
 
     def quit(self):
+        """Esc, closing the window, Ctrl-C: ramp to a stop (tick() does it), then close."""
         if self.closing:
             return
         self.closing = True
         self.release_all()
+        self.close_deadline = time.monotonic() + 3.0   # 0.8 m/s at 0.5 m/s² takes 1.6 s
+        self.big.config(text='STOPPING', fg='#e0c050')
+
+    def _finish(self):
         for _ in range(5):
             self.pub.publish(Twist())
         self.root.destroy()

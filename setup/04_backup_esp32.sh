@@ -43,6 +43,9 @@ if [[ -z "$PORT" ]]; then
   fi
 fi
 [[ -e "$PORT" ]] || die "$PORT doesn't exist."
+if fuser -s "$(readlink -f "$PORT")" 2>/dev/null; then
+  die "$PORT is in use by another program (micro-ROS agent?). Stop everything first: run/stop.sh"
+fi
 [[ -r "$PORT" && -w "$PORT" ]] || die "No permission on $PORT. Are you in the 'dialout' group? (02_setup_pi.sh adds you; reboot after it.)"
 
 OUT="$HOME/recovered/esp32-$(date +%Y%m%d-%H%M%S)"

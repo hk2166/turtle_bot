@@ -4,7 +4,8 @@
 # Is the Pi's 5 V supply clean? The Pi browns out when the pack sags, which kills a mapping run.
 #
 #   run/power_check.sh            full report
-#   run/power_check.sh --brief    one line (used by the pre-flight); exit 1 if undervoltage now or 5 V low
+#   run/power_check.sh --brief    one line (used by the pre-flight); exit 1 if undervoltage now or 5 V low,
+#                                 exit 2 if it couldn't read the rail at all (never "clean" when unknown)
 #   run/power_check.sh --watch    print the 5 V rail every second and flag dips (Ctrl-C to stop)
 set -uo pipefail
 MIN_5V=4.85   # the Pi 5 flags undervoltage at ~4.63 V; below ~4.85 V the buck or wiring is marginal
@@ -30,7 +31,11 @@ decode() {  # decode HEX → words
 case "${1:-}" in
   --brief)
     v="$(read_5v)"; t="$(throttled)"
-    msg="5 V rail ${v:-?} V, throttled=${t:-?} ($(decode "${t:-0}"))"
+    if [[ -z "$v" && -z "$t" ]]; then
+      echo "5 V rail: couldn't read it (vcgencmd failed; is $USER in the 'video' group?)"
+      exit 2
+    fi
+    msg="5 V rail ${v:-?} V, throttled=${t:-?} ($([[ -n "$t" ]] && decode "$t" || echo "throttle state unknown"))"
     echo "$msg"
     [[ -n "$t" ]] && (( t & 0x1 )) && exit 1
     [[ -n "$v" ]] && awk -v v="$v" -v m="$MIN_5V" 'BEGIN{exit !(v < m)}' && exit 1
@@ -49,7 +54,7 @@ case "${1:-}" in
   *)
     t="$(throttled)"
     echo "5 V rail (EXT5V_V): $(read_5v) V   (want ≥ $MIN_5V V)"
-    echo "get_throttled:      ${t:-?}  → $(decode "${t:-0}")"
+    echo "get_throttled:      ${t:-?}  → $([[ -n "$t" ]] && decode "$t" || echo "couldn't read it")"
     echo "Core temp:          $(vcgencmd measure_temp | cut -d= -f2)"
     echo "Pack: keep it within 22–30 V (stop at 22 V until the 19.8 V figure is confirmed)."
     ;;

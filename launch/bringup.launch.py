@@ -5,7 +5,7 @@ Started by run/remap.sh (which reads config/robot.env and passes everything belo
 By hand:  ros2 launch launch/bringup.launch.py lidar_port:=/dev/ttyUSB0 esp32_port:=/dev/ttyACM0
           ros2 launch launch/bringup.launch.py sim:=true       # no hardware: nodes/sim_robot.py
 
-TF tree:  odom → base_link (ESP32 or odom_to_tf.py)  and static  base_link → laser / imu / camera
+TF tree:  odom → base_link (ESP32 or odom_to_tf.py)  and static  base_link → laser / imu_link / camera
 """
 import os
 
@@ -69,7 +69,8 @@ def generate_launch_description():
                      '-p', ['out_topic:=', LC('scan_filtered_topic')]],
                 name='scan_filter', output='screen'),
             static_tf('laser', 'laser', LC('laser_x'), LC('laser_y'), LC('laser_z'), LC('laser_yaw')),
-            static_tf('imu', 'imu', LC('imu_x'), LC('imu_y'), LC('imu_z')),
+            # the firmware stamps /imu/data_raw with frame imu_link (seen on the robot 2026-10-01)
+            static_tf('imu', 'imu_link', LC('imu_x'), LC('imu_y'), LC('imu_z')),
             static_tf('camera', 'camera', LC('camera_x'), LC('camera_y'), LC('camera_z'),
                       '0', LC('camera_pitch')),
         ])

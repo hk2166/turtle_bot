@@ -24,6 +24,7 @@ import csv
 import math
 import os
 import select
+import signal
 import sys
 import termios
 import time
@@ -34,6 +35,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import Imu
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'nodes'))
@@ -106,17 +108,25 @@ class Cal:
         """Ramp up to `rate`, hold, and ramp down so that measure() (progress, same units as target)
         ends at `target`. Returns (commanded integral, aborted)."""
         tty_ok = sys.stdin.isatty()
-        old = termios.tcgetattr(sys.stdin) if tty_ok else None
+        fd = sys.stdin.fileno() if tty_ok else None
+        old = termios.tcgetattr(fd) if tty_ok else None
         v = cmd_int = 0.0
         aborted = False
         last = time.monotonic()
+        # Ctrl-C during the run = "any key": ramp down like any other stop (rclpy's own handler would
+        # have shut ROS down first, so no stop command could be sent).
+        self.interrupted = False
+        prev_int = signal.signal(signal.SIGINT, lambda *_: setattr(self, 'interrupted', True))
         try:
             if tty_ok:
-                tty.setcbreak(sys.stdin.fileno())
+                tty.setcbreak(fd)
             while True:
-                rclpy.spin_once(self.node, timeout_sec=0.0)
-                if tty_ok and select.select([sys.stdin], [], [], 0)[0]:
-                    sys.stdin.read(1)
+                for _ in range(20):          # every waiting callback, so odom/gyro are fresh (not ~250 ms old)
+                    rclpy.spin_once(self.node, timeout_sec=0.0)
+                if tty_ok and select.select([fd], [], [], 0)[0]:
+                    os.read(fd, 64)          # the whole key (an arrow key is 3 bytes)
+                    aborted = True
+                if self.interrupted:
                     aborted = True
                 now = time.monotonic()
                 dt = now - last
@@ -136,11 +146,16 @@ class Cal:
         except KeyboardInterrupt:
             aborted = True
         finally:
-            for _ in range(5):
-                self.send(0.0)
-                time.sleep(0.05)
-            if tty_ok:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
+            signal.signal(signal.SIGINT, prev_int)
+            if tty_ok:                       # terminal first: it must come back even if the sends fail
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                termios.tcflush(fd, termios.TCIFLUSH)   # leftover key bytes would land in the next input()
+            try:
+                for _ in range(5):
+                    self.send(0.0)
+                    time.sleep(0.05)
+            except Exception as e:
+                print(f'\n  ! could not send the stop command ({e}); the ESP32 watchdog stops it within 300 ms')
         print()
         t0 = time.monotonic()
         while time.monotonic() - t0 < 1.0:          # let the robot settle and the last odom arrive
@@ -151,11 +166,17 @@ class Cal:
         if self.args.yes:
             print(f'{prompt} {default:.3f}')
             return default
-        try:
-            s = input(prompt + f' [{default:.3f}] ').strip()
-        except EOFError:
-            s = ''
-        return float(s) if s else default
+        while True:
+            try:
+                s = input(prompt + f' [{default:.3f}] ').strip()
+            except EOFError:
+                s = ''
+            if not s:
+                return default
+            try:
+                return float(s)
+            except ValueError:
+                print('  a number, please (for example 4.97)')
 
 
 def straight(cal, args):
@@ -179,7 +200,9 @@ def straight(cal, args):
         tx, ty, _ = cal.pose(cal.truth)
         default = math.hypot(tx - tx0[0], ty - tx0[1])
     real = cal.ask_float('  Measured distance with a tape (m)?', default)
-    scale = real / odom_d if odom_d > 0.05 else float('nan')
+    scale = real / odom_d if odom_d > 0.05 and real > 0 else float('nan')
+    if scale != scale:
+        print('  ! too little distance (odometry or measured) to compute a factor: nothing to apply')
     print(f'\n  commanded {cmd_d:.3f} m · odometry {odom_d:.3f} m · measured {real:.3f} m'
           f'{"  (ABORTED early: still valid, just less precise)" if aborted else ""}')
     print(f'  odometry scale error: {100 * (1 / scale - 1):+.1f}%  → multiply WHEEL_DIA by {scale:.4f}')
@@ -226,7 +249,9 @@ def spin(cal, args):
     odom_turns = state['odom'] / k
     default = state['truth'] / k if cal.truth else (gyro_turns if gyro_turns is not None else odom_turns)
     real = cal.ask_float('  How many turns did it REALLY do (by the tape mark)?', default)
-    factor = cmd_turns / real if real > 0.05 else float('nan')
+    factor = cmd_turns / real if real > 0.05 and cmd_turns > 0.05 else float('nan')
+    if factor != factor:
+        print('  ! too little rotation (commanded or real) to compute a factor: nothing to apply')
     print(f'\n  commanded {cmd_turns:.3f} turns · gyro {gyro_turns if gyro_turns is None else round(gyro_turns, 3)}'
           f' · odom {odom_turns:.3f} · real {real:.3f}{"  (ABORTED early)" if aborted else ""}')
     print(f'  turn efficiency {100 / factor:.0f}% (the wheels have to be told {factor:.3f}× the rotation)')
@@ -259,9 +284,14 @@ def main():
     args.accel = min(args.accel, 0.5)
     args.speed = min(args.speed, 0.4)
 
-    rclpy.init()
-    cal = Cal(args, env)
-    res = straight(cal, args) if args.test == 'straight' else spin(cal, args)
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    try:
+        cal = Cal(args, env)
+        res = straight(cal, args) if args.test == 'straight' else spin(cal, args)
+    except KeyboardInterrupt:        # at a prompt: nothing is moving
+        print('\n  cancelled, nothing logged')
+        rclpy.try_shutdown()
+        sys.exit(130)
     cal.node.destroy_node()
     rclpy.try_shutdown()
     os.makedirs(os.path.dirname(LOG), exist_ok=True)

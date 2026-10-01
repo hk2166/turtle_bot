@@ -15,6 +15,7 @@ import os
 import sys
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
@@ -79,7 +80,7 @@ def main():
     node = ScanFilter()
     try:
         rclpy.spin(node)
-    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

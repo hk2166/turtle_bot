@@ -164,8 +164,11 @@ It publishes the masked scan that slam_toolbox consumes.
     for agent / agent connected / agent lost - stopping / publishes failing - reconnecting / alive heap=…`,
     `[drive] ready: %.1f steps/m, acc %u steps/s^2`, `[imu] ok, gyro bias …`, `[hx711] ok, tare offset …`,
     `[bumper] %s`. Partitions: default 8 MB (app0/app1 3.2 MB, spiffs, coredump).
-  - **Reconstructed** `firmware/campus_bot_base/` from that spec. The first build was still running when
-    this was written (see the commit log for the result). It has **not been flashed**:
+  - **Reconstructed** `firmware/campus_bot_base/` from that spec. It **compiles**, with no warnings in its own
+    code. The image is 446 KB against the original's 416 KB, both with 5 segments, and the flash
+    layout matches the original's (DIO, 80 MHz, 8 MB, `default_8MB.csv`). Build it with
+    `firmware/build.sh`: micro-ROS has to be built outside the ROS environment, and with PlatformIO
+    installed by pipx it needs the `~/.platformio/penv` link. It has **not been flashed**:
     the chip still runs the original. Pin numbers for the bumper, IMU and HX711 and the numeric constants
     are guesses marked VERIFY. Read the real ones from the old firmware's UART0 boot log before flashing.
   - **Reconstructed** `face/` (enrolment service, store, verify, calibrate.py). The 3 old enrolments are gone
@@ -182,8 +185,10 @@ It publishes the masked scan that slam_toolbox consumes.
   - **Measured link behaviour (original firmware):**
     - An idle firmware connects to a new agent in < 1 s, and reconnects by itself when the agent restarts.
     - After a reset it boots in ~3 s.
-    - Creating its 5 entities can take up to ~15 s when the agent is slow: it recycles the session
-      every second until it gets through.
+    - The session churn seen at 12:19 (a new session every second, no topics for ~10 s) was almost
+      certainly **two agents on one port**: a `drive.sh` run overlapped `hw_check.sh`'s agent, and the
+      two split the incoming bytes. With a single agent it connected within 1 s every time. Every run
+      script now refuses to open a port that another program holds, and names that program.
     - The baud rate is ignored on native USB.
     - QoS: every publisher is RELIABLE, the `cmd_vel` subscription is BEST_EFFORT.
   - **Verified end to end on the hardware:** `run/hw_check.sh`, `run/drive.sh` (including recovery from the

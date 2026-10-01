@@ -13,6 +13,7 @@ import os
 import sys
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
@@ -47,7 +48,7 @@ def main():
     print(f'LASER_YAW currently {YAW:.4f} rad. Ctrl-C to quit.')
     try:
         rclpy.spin(node)
-    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
+    except (KeyboardInterrupt, ExternalShutdownException):
         print()
     finally:
         rclpy.try_shutdown()

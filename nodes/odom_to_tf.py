@@ -7,11 +7,16 @@ original firmware broadcast it itself). Running two publishers of the same trans
 TF tree jump, so remap.sh probes first.
 """
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import TransformStamped
+from rclpy.time import Time
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from tf2_ros import TransformBroadcaster
+
+
+MAX_SKEW_NS = 200_000_000   # 0.2 s; the link itself adds ~20–40 ms
 
 
 class OdomToTf(Node):
@@ -23,13 +28,20 @@ class OdomToTf(Node):
         self.br = TransformBroadcaster(self)
         self.create_subscription(Odometry, topic, self.on_odom, qos_profile_sensor_data)
         self.get_logger().info(f'{topic} → TF {self.odom_frame} → {self.base_frame}')
+        self.restamping = None
 
     def on_odom(self, msg):
         t = TransformStamped()
-        t.header.stamp = msg.header.stamp
-        # If the firmware's clock isn't synced (stamp 0), use ours, or TF lookups will fail.
-        if msg.header.stamp.sec == 0 and msg.header.stamp.nanosec == 0:
-            t.header.stamp = self.get_clock().now().to_msg()
+        # Trust the firmware's stamp only if it agrees with our clock. One that isn't synced (zero,
+        # or time since boot, i.e. 1970) would put every transform in the past: TF lookups fail and
+        # slam_toolbox drops every scan.
+        now = self.get_clock().now()
+        skewed = abs((now - Time.from_msg(msg.header.stamp, clock_type=now.clock_type)).nanoseconds) > MAX_SKEW_NS
+        t.header.stamp = now.to_msg() if skewed else msg.header.stamp
+        if skewed != self.restamping:
+            self.restamping = skewed
+            if skewed:
+                self.get_logger().warn('odom stamps are off our clock by > 0.2 s: using the Pi\'s time')
         t.header.frame_id = self.odom_frame
         t.child_frame_id = self.base_frame
         p = msg.pose.pose.position
@@ -43,7 +55,7 @@ def main():
     node = OdomToTf()
     try:
         rclpy.spin(node)
-    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

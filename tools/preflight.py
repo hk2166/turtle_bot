@@ -154,10 +154,12 @@ def main():
             return None
     chain = []
     ok_tf = True
-    for child in ('laser', 'imu', 'camera'):
+    # The IMU's frame is whatever its messages say (imu_link on the robot), so check that one.
+    imu_frame = data['imu'][-1].header.frame_id if data['imu'] else 'imu_link'
+    for child in ('laser', imu_frame, 'camera'):
         t = lookup('odom', child)
         chain.append(f'{child} {"✓" if t else "✗"}')
-        ok_tf &= t is not None if child == 'laser' else True
+        ok_tf &= t is not None if child in ('laser', imu_frame) else True
     report(ok_tf, 'TF tree', 'odom → base_link → ' + ', '.join(chain))
     t = lookup('base_link', 'laser')
     if t:

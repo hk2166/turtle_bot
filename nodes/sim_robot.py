@@ -20,6 +20,7 @@ import random
 
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
@@ -144,7 +145,7 @@ class SimRobot(Node):
         o.twist.twist.linear.x, o.twist.twist.angular.z = self.v, self.w
         self.odom_pub.publish(o)
         imu = Imu()
-        imu.header.stamp, imu.header.frame_id = now, 'imu'
+        imu.header.stamp, imu.header.frame_id = now, 'imu_link'   # same frame as the firmware
         imu.orientation_covariance[0] = -1.0
         imu.angular_velocity.z = self.w_true + random.gauss(0, 0.003)
         imu.angular_velocity.x, imu.angular_velocity.y = random.gauss(0, 0.003), random.gauss(0, 0.003)
@@ -162,7 +163,7 @@ def main():
     node = SimRobot()
     try:
         rclpy.spin(node)
-    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

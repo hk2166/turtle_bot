@@ -26,6 +26,7 @@ elif is_running lidar; then
 else
   resolve_ports
   [[ -e "$LIDAR_DEV" ]] || { err "lidar port $LIDAR_DEV not found. Plug in the CP2102 stick."; exit 1; }
+  if port_busy "$LIDAR_DEV"; then exit 1; fi
   start_bg lidar ros2 run sllidar_ros2 sllidar_node --ros-args \
     -p channel_type:=serial -p serial_port:="$LIDAR_DEV" -p serial_baudrate:="$LIDAR_BAUD" \
     -p frame_id:=laser -p angle_compensate:=true -p scan_mode:="$LIDAR_SCAN_MODE"
@@ -39,8 +40,8 @@ if (( RVIZ )); then
   if [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
     warn "no display (SSH?): skipping RViz"
   else
-    start_bg rviz_lidar rviz2 -d "$PROJECT_DIR/config/lidar_view.rviz"
-    STARTED+=(rviz_lidar)
+    if is_running rviz_lidar; then info "RViz (lidar view) already open"
+    else start_bg rviz_lidar rviz2 -d "$PROJECT_DIR/config/lidar_view.rviz"; STARTED+=(rviz_lidar); fi
     ok "RViz opened (grid = 1 m; the red axis is the lidar's front)"
   fi
 fi

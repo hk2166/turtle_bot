@@ -18,6 +18,11 @@ source /opt/ros/jazzy/setup.bash
 # shellcheck disable=SC1091
 source "$PROJECT_DIR/config/robot.env"
 
+# Ctrl-C ends the script (its EXIT trap still runs). `timeout` puts its command in a process group of
+# its own, so without --foreground (below) and this trap, Ctrl-C during a wait was silently ignored.
+on_int() { echo; err "interrupted"; exit 130; }
+trap on_int INT
+
 say()  { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 ok()   { printf '    \033[32m✓\033[0m %s\n' "$*"; }
@@ -59,7 +64,7 @@ stop_bg() {  # stop_bg NAME : SIGINT the whole process group, then TERM, then KI
 wait_topic() {  # wait_topic TOPIC SECONDS : true once one message arrives
   local topic="$1" secs="$2" end=$((SECONDS + $2))
   while (( SECONDS < end )); do
-    timeout 5 ros2 topic echo --once --no-arr "$topic" >/dev/null 2>&1 && return 0
+    timeout --foreground 5 ros2 topic echo --once --no-arr "$topic" >/dev/null 2>&1 && return 0
     sleep 0.5
   done
   return 1
@@ -75,10 +80,23 @@ esp32_reset() {  # esp32_reset [DEV] : safe reset through the S3's native USB (s
 agent_session() {  # agent_session LOG FROM_LINE SECS : true once the agent logs a client session after FROM_LINE
   local log="$1" from="$2" end=$((SECONDS + $3))
   while (( SECONDS < end )); do
-    tail -n +"$from" "$log" 2>/dev/null | grep -q 'session established' && return 0
+    # not grep -q: under pipefail an early grep exit can SIGPIPE tail and turn a match into a failure
+    tail -n +"$from" "$log" 2>/dev/null | grep 'session established' >/dev/null && return 0
     sleep 0.5
   done
   return 1
+}
+
+port_busy() {  # port_busy DEV : true, and says who, if another program already has DEV open
+  local dev pids
+  dev="$(readlink -f "$1" 2>/dev/null)" || return 1
+  [[ -e "$dev" ]] || return 1
+  pids="$(fuser "$dev" 2>/dev/null | tr -s ' ' ',' | sed 's/^,//; s/,$//')"
+  [[ -n "$pids" ]] || return 1
+  err "$1 is already open in another program (two programs on one serial port split its data):"
+  ps -o pid=,args= -p "$pids" 2>/dev/null | cut -c1-100 | sed 's/^/        /' >&2
+  err "close that program first, or stop everything with run/stop.sh"
+  return 0
 }
 
 resolve_ports() {  # sets LIDAR_DEV and ESP32_DEV from LIDAR_PORT / ESP32_PORT (auto = udev names first)

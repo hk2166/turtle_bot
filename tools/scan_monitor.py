@@ -14,6 +14,7 @@ import math
 import time
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
@@ -82,7 +83,7 @@ def main():
             if state['last'] is not None:
                 lines += render(state['last'])
             print('\033[H\033[J' + '\n'.join(lines), flush=True)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

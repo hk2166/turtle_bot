@@ -27,6 +27,7 @@
 
 #define LOG(...) Serial0.printf(__VA_ARGS__)
 #define RCCHECK(fn) { rcl_ret_t rc_ = (fn); if (rc_ != RCL_RET_OK) return false; }
+#define RCIGNORE(fn) { rcl_ret_t rc_ = (fn); (void)rc_; }   // teardown with the agent gone: failures expected
 
 static const float STEPS_PER_M = STEPS_PER_REV / (PI * WHEEL_DIA);
 
@@ -271,14 +272,14 @@ static bool create_entities() {
 static void destroy_entities() {
   rmw_context_t *rmw = rcl_context_get_rmw_context(&support.context);
   (void)rmw_uros_set_context_entity_destroy_session_timeout(rmw, 0);
-  rcl_subscription_fini(&cmd_sub, &node);
-  rcl_publisher_fini(&odom_pub, &node);
-  rcl_publisher_fini(&imu_pub, &node);
-  rcl_publisher_fini(&bump_pub, &node);
-  rcl_publisher_fini(&weight_pub, &node);
-  rclc_executor_fini(&executor);
-  rcl_node_fini(&node);
-  rclc_support_fini(&support);
+  RCIGNORE(rcl_subscription_fini(&cmd_sub, &node));
+  RCIGNORE(rcl_publisher_fini(&odom_pub, &node));
+  RCIGNORE(rcl_publisher_fini(&imu_pub, &node));
+  RCIGNORE(rcl_publisher_fini(&bump_pub, &node));
+  RCIGNORE(rcl_publisher_fini(&weight_pub, &node));
+  RCIGNORE(rclc_executor_fini(&executor));
+  RCIGNORE(rcl_node_fini(&node));
+  RCIGNORE(rclc_support_fini(&support));
 }
 
 static void init_messages() {

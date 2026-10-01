@@ -17,9 +17,12 @@ if [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
   exit 1
 fi
 
-STARTED_AGENT=0
+STARTED_AGENT=0 LINK_UP=0
 cleanup() {
-  timeout 4 ros2 topic pub -w 1 --once "$CMD_VEL_TOPIC" geometry_msgs/msg/Twist '{}' >/dev/null 2>&1 || true
+  # 3 zeros, not 1: the ESP32's cmd_vel subscriber is best-effort, so a single message can be lost.
+  if (( LINK_UP )); then
+    timeout 4 ros2 topic pub -w 1 -t 3 -r 10 "$CMD_VEL_TOPIC" geometry_msgs/msg/Twist '{}' >/dev/null 2>&1 || true
+  fi
   if (( STARTED_AGENT )); then stop_bg agent; fi
 }
 trap cleanup EXIT
@@ -32,7 +35,11 @@ start_agent() {  # sets AGENT_FROM to the log line where this agent's output sta
 
 say "ESP32 link"
 resolve_ports
-if is_running bringup; then
+if is_running bringup && [[ "$(cat "$RUN_DIR/bringup.mode" 2>/dev/null)" == sim ]]; then
+  err "A SIMULATED bring-up (run/remap.sh --sim) is running: this would drive the simulator."
+  err "Stop it first: run/stop.sh"
+  exit 1
+elif is_running bringup; then
   ok "using the agent from run/remap.sh's bring-up"
   if ! wait_topic "$ODOM_TOPIC" 5; then
     info "no $ODOM_TOPIC: resetting the ESP32 so it reconnects"
@@ -42,6 +49,7 @@ if is_running bringup; then
 else
   [[ -e "$ESP32_DEV" ]] || { err "ESP32 not found ($ESP32_DEV). Plug in its native USB-C port (Espressif 303a:1001)."; exit 1; }
   stop_bg agent >/dev/null   # a leftover agent from a crashed run would hold the port
+  if port_busy "$ESP32_DEV"; then exit 1; fi
   start_agent
   info "agent on $ESP32_DEV @ $AGENT_BAUD (log: $LOG_DIR/agent.log)"
   if ! agent_session "$LOG_DIR/agent.log" "$AGENT_FROM" 3; then
@@ -65,6 +73,7 @@ else
   wait_topic "$ODOM_TOPIC" 10 || { err "session up but no $ODOM_TOPIC. See $LOG_DIR/agent.log"; exit 1; }
 fi
 ok "ESP32 connected ($ODOM_TOPIC live)"
+LINK_UP=1
 
 say "Driving"
 info "A window called 'Campus Bot: hold to drive' opens now. CLICK IT, then hold the keys THERE"

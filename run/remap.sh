@@ -64,6 +64,10 @@ else
     info "SIMULATION: no hardware used"
   else
     resolve_ports
+    # The other tools' drivers (run/lidar_view.sh, run/drive.sh, hw_check) would share the ports with
+    # this bring-up and split the data: stop them, then make sure nothing else holds a port.
+    for n in lidar rviz_lidar agent hw_lidar hw_agent; do is_running "$n" && { stop_bg "$n" >/dev/null; info "stopped $n (needs its port)"; }; done
+    for d in "$LIDAR_DEV" "$ESP32_DEV"; do if port_busy "$d"; then exit 1; fi; done
     [[ -e "$LIDAR_DEV" ]] || { err "Lidar port $LIDAR_DEV not found. Plug in the CP2102 stick (ls /dev/ttyUSB*)."; exit 1; }
     [[ -e "$ESP32_DEV" ]] || { err "ESP32 port $ESP32_DEV not found. Plug in the ESP32's native USB-C port (303a:1001)."; exit 1; }
     info "lidar $LIDAR_DEV @ $LIDAR_BAUD   ESP32 $ESP32_DEV @ $AGENT_BAUD"
@@ -143,7 +147,7 @@ python3 nodes/teleop_keys.py --topic "$CMD_VEL_TOPIC" --speed "$MAP_LIN_SPEED" -
   --max-speed "$MAX_LIN_SPEED" --max-turn "$MAX_ANG_SPEED" --accel "$MAX_LIN_ACCEL" --ang-accel "$MAX_ANG_ACCEL"
 rc=$?
 set -e
-trap - INT
+trap on_int INT   # back to lib.sh's handler
 if (( rc != 0 )); then
   ask "Save the map as '$AREA'? [Y/n]" y || { info "Not saved. SLAM is still running; run/stop.sh to stop."; exit 0; }
 fi

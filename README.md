@@ -81,6 +81,10 @@ By hand: `run/stop.sh && python3 tools/esp32_reset.py`. It prints the boot mode:
 - `SPI_FAST_FLASH_BOOT` = the firmware is running.
 - `DOWNLOAD` = it's stuck in the ROM loader. Unplug its USB for 3 s, then plug it back in.
 
+Only one program can use a serial port at a time: two of them split its data, and the ESP32 then
+churns its session. The run scripts refuse to start if a port is already open, and name the program
+holding it. Close that program, or run `run/stop.sh`.
+
 Never reset it with a pyserial RTS pulse. On the S3's native USB that can arm download mode (see
 RECOVERY.md, 2026-10-01).
 

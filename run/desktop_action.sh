@@ -4,10 +4,9 @@
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 case "${1:-}" in
   hwcheck)
-    run/hw_check.sh
-    echo
-    read -r -p "Write the suggested values into config/robot.env? [y/N] " a
-    [[ "$a" =~ ^[Yy] ]] && run/hw_check.sh --apply --skip-lidar ;;
+    # Ask first, so the check (and its ESP32 reset) runs once, not twice.
+    read -r -p "If it suggests new config/robot.env values, write them automatically? [y/N] " a
+    if [[ "$a" =~ ^[Yy] ]]; then run/hw_check.sh --apply; else run/hw_check.sh; fi ;;
   map)
     read -r -p "Area name [office]: " a
     run/remap.sh "${a:-office}" ;;

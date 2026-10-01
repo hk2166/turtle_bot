@@ -10,7 +10,10 @@ such as new calibration constants. Before that:
    as a second ttyUSB/ttyACM), run `pio device monitor -p <that port> -b 115200`, then press RESET.
    Copy the numbers from `[imu] … SDA=… SCL=…`, `[hx711] … DT=… SCK=…` and
    `[drive] ready: … steps/m, acc …` into `include/config.h`. Everything marked VERIFY there is a guess.
-3. Flash with the **wheels off the ground**: `pio run -t upload --upload-port /dev/esp32`. Run
+3. Flash with the **wheels off the ground**: `firmware/build.sh upload`. It asks you to type `flash`.
+   Build only, which is always safe: `firmware/build.sh`. Use the script, not a bare `pio run`: in a
+   terminal where ROS is sourced, CMake mixes the Pi's ROS packages into the ESP32 build and fails
+   with "No 'rosidl_typesupport_cpp' found". Run
    `run/hw_check.sh` again: the topics and rates must match what the original gave.
 4. Test the safety paths before the robot touches the floor:
    - Stop sending `cmd_vel`: the wheels must ramp to a stop within 300 ms plus the ramp.

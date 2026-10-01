@@ -31,7 +31,7 @@ if is_running bringup || is_running agent || pgrep -f "$AGENT" >/dev/null; then
     && ok "zero velocity sent on $CMD_VEL_TOPIC" || warn "couldn't send zero velocity (the 300 ms watchdog stops the motors anyway)"
 fi
 # 3. Everything we started.
-for name in slam rviz rviz_lidar camera odom_tf lidar agent bringup; do stop_bg "$name"; done
+for name in slam rviz rviz_lidar camera odom_tf lidar agent hw_lidar hw_agent bringup; do stop_bg "$name"; done
 # 4. Strays (crashed or orphaned runs), matched precisely (see STRAYS above).
 found=0
 for p in "${STRAYS[@]}"; do

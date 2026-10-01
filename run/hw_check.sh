@@ -35,6 +35,11 @@ REPORT="$LOG_DIR/hw_check-$(date +%Y%m%d-%H%M%S).txt"
 exec > >(tee "$REPORT") 2>&1
 
 bash run/stop.sh >/dev/null 2>&1 || true
+# Our test drivers run detached (setsid): make sure Ctrl-C or an error never leaves them behind.
+trap 'stop_bg hw_lidar >/dev/null; stop_bg hw_agent >/dev/null' EXIT
+for d in /dev/lidar /dev/esp32; do
+  if [[ -e "$d" ]] && port_busy "$d"; then err "hw_check needs the serial ports to itself."; exit 1; fi
+done
 
 # ------------------------------------------------------------------------------------------------
 say "1/5 USB serial devices"
@@ -86,6 +91,9 @@ if (( DO_LIDAR )); then
   declare -A TRIED=()
   for dev in "${CANDS[@]}"; do
     [[ -n "${TRIED[$dev]:-}" ]] && continue; TRIED[$dev]=1
+    # Never open the ESP32's native port with the lidar driver: sllidar drops DTR on open, which
+    # with RTS up holds the S3 in reset, and the port keeps that state after close (-hupcl).
+    if [[ "${KIND[$dev]:-}" == 303a:* || "$dev" == "$(readlink -f /dev/esp32 2>/dev/null)" ]]; then continue; fi
     info "trying $dev …"
     start_bg hw_lidar ros2 run sllidar_ros2 sllidar_node --ros-args \
       -p serial_port:="$dev" -p serial_baudrate:="$LIDAR_BAUD" -p frame_id:=laser -p angle_compensate:=true
@@ -173,7 +181,7 @@ if (( DO_ESP )); then
     say "4/5 What the ESP32 publishes and subscribes"
     # DDS discovery of the agent's topics takes a few seconds: poll instead of a fixed sleep.
     for _ in $(seq 15); do
-      ros2 topic list -t 2>/dev/null | grep -q 'nav_msgs/msg/Odometry' && break
+      ros2 topic list -t 2>/dev/null | grep 'nav_msgs/msg/Odometry' >/dev/null && break
       sleep 1
     done
     info "nodes: $(ros2 node list 2>/dev/null | tr '\n' ' ')"
@@ -194,8 +202,11 @@ if (( DO_ESP )); then
       hz="$(timeout 6 ros2 topic hz "$t" 2>/dev/null | sed -n 's/.*average rate: \([0-9.]*\).*/\1/p' | tail -1)"
       info "$t: ${hz:-no messages} Hz"
     done
-    if timeout 4 ros2 topic echo --once "$odom" 2>/dev/null | grep -qE 'sec: 0$'; then
-      warn "odom stamps look unsynced (sec: 0): odom_to_tf.py handles that; SLAM may still complain. Check the firmware time sync."
+    # Compare the odom stamp with the Pi's clock (a firmware without time sync stamps in 1970).
+    osec="$(timeout 4 ros2 topic echo --once --field header.stamp.sec "$odom" 2>/dev/null | head -1 | tr -dc '0-9')"
+    if [[ -n "$osec" ]] && (( osec < $(date +%s) - 5 || osec > $(date +%s) + 5 )); then
+      warn "odom stamps are $(( $(date +%s) - osec )) s off the Pi's clock (no time sync in the firmware?). odom_to_tf.py restamps them."
+    elif [[ -n "$osec" ]]; then info "odom stamps match the Pi's clock"
     fi
     info "odom frames: $(timeout 4 ros2 topic echo --once --no-arr "$odom" 2>/dev/null | grep -E 'frame_id' | tr -s ' ' | tr '\n' ' ')"
     if python3 tools/pose_tool.py probe odom base_link --timeout 3; then info "the firmware broadcasts odom → base_link TF itself"
