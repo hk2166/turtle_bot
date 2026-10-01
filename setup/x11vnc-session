@@ -7,7 +7,10 @@
 [ "${XDG_SESSION_TYPE:-}" = "x11" ] || exit 0
 [ -z "${XRDP_SESSION:-}" ] || exit 0
 [ -f "$HOME/.vnc/passwd" ] || exit 0           # set one first: x11vnc -storepasswd
+# -xrandr newfbsize: follow screen-size changes (monitor unplugged / swapped) and tell the viewer the new
+# size; without it the picture and the mouse went out of line (2026-10-01). The size itself is kept
+# fixed with no monitor by setup/06_headless_display.sh.
 exec x11vnc -display "${DISPLAY:-:0}" ${XAUTHORITY:+-auth "$XAUTHORITY"} \
-  -usepw -shared -forever -loop -repeat -nap \
+  -usepw -shared -forever -loop -repeat -nap -xrandr newfbsize \
   -desktop "campus-bot ($(hostname))" -rfbport 5900 \
   -o "$HOME/.vnc/x11vnc.log"

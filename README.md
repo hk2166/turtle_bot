@@ -101,7 +101,8 @@ Logs go to `~/.campus_bot/logs/<name>.log` (bringup, slam, nav, rviz, odom_tf, m
   log in with **"Ubuntu on Xorg"** (gear icon on the GDM password screen; GDM remembers the choice —
   x11vnc can't capture the default Wayland session). Set the VNC password once: `x11vnc -storepasswd`.
   From the Mac: Finder → ⌘K → `vnc://resp-desktop.local`. It only works while someone is logged in on
-  the monitor; with no monitor attached, an HDMI dummy plug is needed.
+  the monitor. With no monitor attached, run `sudo bash setup/06_headless_display.sh` once and reboot:
+  it keeps HDMI-A-1 on at 1920x1080 so the desktop (and VNC) look the same without a monitor.
   (GNOME's built-in Desktop Sharing, RDP on port 3390, authenticates but then stalls with the Mac
   "Windows App" client — seen on 11.4.0, 2026-10-01 — so it is disabled: `grdctl rdp disable`.)
 - **Code:** VS Code on the Mac → Remote-SSH → `resp@resp-desktop.local` → open `~/Desktop/campus_bot_fw`.
