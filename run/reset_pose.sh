@@ -60,9 +60,9 @@ if (( ! EXACT )); then
   fi
 fi
 python3 tools/pose_tool.py set "$X" "$Y" "$YAW"
-sleep 2
-after="$(python3 tools/pose_tool.py get --timeout 3 2>/dev/null || echo 'none')"
+# right after a Nav2 start AMCL can take a few seconds to publish map → odom
+after="$(python3 tools/pose_tool.py get --timeout 10 2>/dev/null || echo 'none')"
 info "pose before: $before"
-if [[ "$after" == none ]]; then err "AMCL didn't take the pose (see $LOG_DIR/loc.log)"; exit 1; fi
+if [[ "$after" == none ]]; then err "AMCL didn't take the pose (see $LOG_DIR/nav.log)"; exit 1; fi
 ok "pose now:    $after   (x y yaw in radians)"
 info "In RViz the red laser points should sit on the black walls."
