@@ -105,6 +105,8 @@ Logs go to `~/.campus_bot/logs/<name>.log` (bringup, slam, nav, rviz, odom_tf, m
   the monitor. With no monitor attached, run `sudo bash setup/06_headless_display.sh --autologin` once and reboot:
   it keeps HDMI-A-1 on at 1920x1080 so the desktop (and VNC) look the same without a monitor, and logs
   `resp` into Xorg at boot so VNC is up with nobody at the login screen (`--undo` reverts both).
+  **Plug a monitor into the HDMI port next to the USB-C power socket.** The other port gets an empty
+  extended desktop (no top bar); a login script mirrors it onto the main screen as a fallback.
   (GNOME's built-in Desktop Sharing, RDP on port 3390, authenticates but then stalls with the Mac
   "Windows App" client — seen on 11.4.0, 2026-10-01 — so it is disabled: `grdctl rdp disable`.)
 - **Code:** VS Code on the Mac → Remote-SSH → `resp@resp-desktop.local` → open `~/Desktop/campus_bot_fw`.

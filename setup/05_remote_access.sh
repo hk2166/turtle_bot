@@ -74,6 +74,8 @@ log "Monitor screen mirror (VNC, port 5900)"
 install -d -o "$U" -g "$U" "/home/$U/.local/bin"
 install -m 0755 -o "$U" -g "$U" "$(dirname "$0")/x11vnc-session" "/home/$U/.local/bin/x11vnc-session"
 install -m 0644 -o "$U" -g "$U" "$(dirname "$0")/x11vnc.desktop" "/home/$U/.config/autostart/x11vnc.desktop"
+install -m 0755 -o "$U" -g "$U" "$(dirname "$0")/mirror-displays" "/home/$U/.local/bin/mirror-displays"
+install -m 0644 -o "$U" -g "$U" "$(dirname "$0")/mirror-displays.desktop" "/home/$U/.config/autostart/mirror-displays.desktop"
 if [[ -f "/home/$U/.vnc/passwd" ]]; then ok "starts with every 'Ubuntu on Xorg' monitor login"
 else warn "no VNC password yet: as $U, run  x11vnc -storepasswd"; fi
 info "connect from the Mac: Finder ⌘K → vnc://$(hostname).local"

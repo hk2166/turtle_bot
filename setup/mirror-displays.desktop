@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Mirror second HDMI (campus_bot)
+Comment=campus_bot: a monitor on the second micro-HDMI port mirrors the primary instead of extending it
+Exec=/home/resp/.local/bin/mirror-displays
+NotShowIn=XFCE;
+X-GNOME-Autostart-enabled=true

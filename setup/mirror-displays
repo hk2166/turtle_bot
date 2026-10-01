@@ -1,0 +1,13 @@
+#!/bin/sh
+# campus_bot (setup/05_remote_access.sh): if a monitor is on the SECOND micro-HDMI port, mirror it onto
+# the first one instead of extending. setup/06_headless_display.sh keeps HDMI-A-1 (the port next to the
+# USB-C power socket) always on as the primary 1920x1080 screen; a monitor plugged into the other port
+# would otherwise get an EMPTY extended desktop (no top bar or dock — seen 2026-10-01) and stretch the
+# VNC picture to 3840x1080. Plugging the monitor into the port next to USB-C avoids all this.
+# Autostarted at login in Xorg sessions; harmless when HDMI-2 is absent.
+[ "${XDG_SESSION_TYPE:-}" = "x11" ] || exit 0
+[ -z "${XRDP_SESSION:-}" ] || exit 0
+sleep 3   # let gnome-shell finish laying out the monitors first
+if xrandr 2>/dev/null | grep -q '^HDMI-2 connected'; then
+    xrandr --output HDMI-2 --same-as HDMI-1 2>/dev/null || true
+fi
