@@ -53,7 +53,8 @@ beats a reconstruction.
   RXD, Green (lidar RX) → TXD. The scan plane is at ~215 mm, and 4 column slivers are masked.
 - **Sensors:**
   - MPU6050 IMU on the ESP32, used as the heading source.
-  - Logitech Brio 100 on a mast at ~1.25 m, tilted up ~10°, with a 12 V warm-white LED strip as fill light.
+  - Logitech Brio 100 on a mast at ~1.25 m, meant to tilt up ~10° (seen ~25° down on 2026-10-01), with a
+    12 V warm-white LED strip as fill light. Measure it with `tools/camera_pose.py`.
   - 5 kg bar load cell + HX711 under a floating crate floor: a weight drop means the parcel was delivered.
   - 6× Omron V-156 microswitches on the front-only bumper, wired NC in series (open circuit = stop).
 - **Structure:** 400×300×12 mm ply base; all electricals on deck 1 (≤ ~120 mm tall) under an acrylic
@@ -80,5 +81,9 @@ beats a reconstruction.
 - Static TFs: `base_link → laser` (z 0.215 m), plus `imu` and `camera`.
 - `run/remap.sh <area> [--nav]` does the whole mapping flow. Press `q` to save `maps/<area>` and
   `maps/<area>_clean`, then grade the map.
+- Camera: `nodes/camera_node.py` is the only program that opens `/dev/video0` (1280x720 MJPG). It detects
+  AprilTags (tag36h11) on the Pi and publishes `/tags`. `nodes/tag_map.py` records the tags into
+  `maps/<area>_tags.yaml` while mapping, then sets and corrects AMCL's pose from them during navigation
+  (`run/nav.sh <area>`). Tags go up in pairs; see README → Camera localization.
 - Face stack: FastAPI enrolment service, InsightFace buffalo_s (ArcFace), 1:1 verification with
   best-of-N frames, threshold 0.42 (a placeholder pending calibration), and `calibrate.py`.

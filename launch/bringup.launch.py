@@ -5,7 +5,8 @@ Started by run/remap.sh (which reads config/robot.env and passes everything belo
 By hand:  ros2 launch launch/bringup.launch.py lidar_port:=/dev/ttyUSB0 esp32_port:=/dev/ttyACM0
           ros2 launch launch/bringup.launch.py sim:=true       # no hardware: nodes/sim_robot.py
 
-TF tree:  odom → base_link (ESP32 or odom_to_tf.py)  and static  base_link → laser / imu_link / camera
+TF tree:  odom → base_link (ESP32 or odom_to_tf.py)  and static  base_link → laser / imu_link / camera,
+          camera → camera_optical (x right, y down, z forward: the frame of nodes/camera_node.py's /tags)
 """
 import os
 
@@ -25,15 +26,16 @@ ARGS = {
     'scan_topic': '/scan', 'scan_filtered_topic': '/scan_filtered',
     'laser_x': '0.0', 'laser_y': '0.0', 'laser_z': '0.215', 'laser_yaw': '0.0',
     'imu_x': '0.0', 'imu_y': '0.0', 'imu_z': '0.06',
-    'camera_x': '0.0', 'camera_y': '0.0', 'camera_z': '1.25', 'camera_pitch': '-0.1745',
+    'camera_x': '0.0', 'camera_y': '0.0', 'camera_z': '1.25',
+    'camera_roll': '0.0', 'camera_pitch': '-0.1745', 'camera_yaw': '0.0',
 }
 
 
-def static_tf(name, child, x, y, z, yaw='0', pitch='0', roll='0'):
+def static_tf(name, child, x, y, z, yaw='0', pitch='0', roll='0', parent='base_link'):
     return Node(
         package='tf2_ros', executable='static_transform_publisher', name=f'static_tf_{name}',
         arguments=['--x', x, '--y', y, '--z', z, '--yaw', yaw, '--pitch', pitch, '--roll', roll,
-                   '--frame-id', 'base_link', '--child-frame-id', child],
+                   '--frame-id', parent, '--child-frame-id', child],
         output='screen')
 
 
@@ -72,5 +74,7 @@ def generate_launch_description():
             # the firmware stamps /imu/data_raw with frame imu_link (seen on the robot 2026-10-01)
             static_tf('imu', 'imu_link', LC('imu_x'), LC('imu_y'), LC('imu_z')),
             static_tf('camera', 'camera', LC('camera_x'), LC('camera_y'), LC('camera_z'),
-                      '0', LC('camera_pitch')),
+                      LC('camera_yaw'), LC('camera_pitch'), LC('camera_roll')),
+            static_tf('camera_optical', 'camera_optical', '0', '0', '0', '-1.5707963', '0', '-1.5707963',
+                      parent='camera'),
         ])
