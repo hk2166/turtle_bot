@@ -1,0 +1,12 @@
+# RECONSTRUCTED from RECOVERY.md/CLAUDE.md (2026-10-01) — not yet run on the robot.
+# Face stack, installed in a venv (not system-wide):
+#   python3 -m venv ~/.venvs/face && ~/.venvs/face/bin/pip install -r face/requirements.txt
+# Versions are the ones in ~/.venvs/face on resp-desktop (2026-10-01).
+insightface==2.0
+onnxruntime==1.30.0
+opencv-python-headless==5.0.0.93
+numpy==2.5.3
+cryptography==50.0.1
+fastapi==0.142.0
+uvicorn==0.54.0
+python-multipart==0.0.32

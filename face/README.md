@@ -1,0 +1,72 @@
+<!-- RECONSTRUCTED from RECOVERY.md/CLAUDE.md (2026-10-01) — not yet run on the robot. -->
+# Face verification
+
+Confirms the recipient at handover: 1:1 check of the person at the crate against the claimed
+recipient's enrolment (OTP is the fallback). InsightFace **buffalo_s** (SCRFD + ArcFace) on the Pi's
+CPU, best-of-N frames from the mast Brio. Rebuilt from the spec on 2026-10-01; **not yet run on the
+robot or with a real camera**. The 3 colleagues enrolled before the loss must re-enrol unless the old
+card gives back both `faces.enc` and `faces.key`.
+
+| file | what |
+|---|---|
+| `face_store.py` | Fernet-encrypted embedding store, `~/.campus_bot/faces.enc` + `faces.key` |
+| `engine.py` | InsightFace wrapper: `embed(frame) -> (embedding, bbox, det_score, ms)` |
+| `verify.py` | best-of-N 1:1 verification, CLI and `verify(person_id, frames)` |
+| `enroll_service.py` | FastAPI phone enrolment page + `/enroll`, `/people`, `DELETE /people/{id}` |
+| `calibrate.py` | collect scored frames, then TAR/FAR sweep, timing, desk-vs-mast, best-of-N |
+
+## Setup
+```bash
+python3 -m venv ~/.venvs/face && ~/.venvs/face/bin/pip install -r face/requirements.txt   # once
+source ~/.venvs/face/bin/activate
+```
+The model (~120 MB) downloads to `~/.insightface/models/buffalo_s` on first use. Stop
+`run/camera.sh` (or anything else holding `/dev/video0`) before using the camera here.
+
+## Enrol (phone)
+```bash
+ENROLL_TOKEN=<pick a code> python face/enroll_service.py     # 0.0.0.0:8000
+ngrok http 8000                                               # second terminal
+```
+Phones only give the page the camera over HTTPS, so send people the `https://….ngrok…` URL plus
+the code. The page asks for their ID (lowercase, e.g. `lakshaysharma`), needs the opt-in box ticked,
+then walks them through front / slight left / right / up / down (3 frames each). The server needs ≥ 5
+usable faces and drops frames that don't match the rest. Re-enrolling replaces the old template.
+The ngrok authtoken stays in ngrok's own config (`ngrok config add-authtoken`); never put it in this
+repo, a script or a log. Stop ngrok when enrolment is done. Without `ENROLL_TOKEN`, anyone with the URL can
+enrol or delete people. `GET /people` (names only) is open either way.
+
+`python face/face_store.py` lists who is enrolled. `--delete <id>` removes someone.
+
+## Verify
+```bash
+python face/verify.py hemant                         # 5 frames from /dev/video0, threshold 0.42
+python face/verify.py hemant --det-size 320 --frames 5
+python face/verify.py hemant --images a.jpg b.jpg    # from files
+```
+Exit code 0 = accept, 1 = reject, 2 = error. Stops at the first frame ≥ threshold; the 2 s budget is checked
+between frames. **0.42 is a placeholder** until calibration has impostor data.
+
+## Calibrate (what's still open, see RECOVERY.md)
+```bash
+python face/calibrate.py collect --person hemant --label genuine  --session mast --frames 40
+python face/calibrate.py collect --person hemant --label impostor --session mast --frames 40   # someone else
+python face/calibrate.py collect --person hemant --label genuine  --session mast --det-size 320
+python face/calibrate.py analyze
+python face/calibrate.py analyze --relabel lakshaysharma=impostor     # if Lakshay's frames were someone else
+```
+1. Collect **impostor** rows: the sweep can't recommend a threshold without them (the last run had
+   120 genuine, 0 impostor). Use several people claiming each enrolled person.
+2. Settle the `lakshaysharma` ~0.18 question with Hemant: relabel (`--relabel`) or re-enrol him.
+3. Compare `--det-size 320` with 640: the last p95 was ~900 ms and the worst frame took over 2 s.
+4. Put the recommended threshold into `verify.py`'s `THRESHOLD`.
+
+Rows go to `~/.campus_bot/calib/scores.csv`. It holds scores only, no images.
+
+## Privacy rules
+- No images are kept. Uploaded frames are decoded in memory, embedded and dropped. Only embeddings
+  are stored, encrypted.
+- Enrolment is opt-in (explicit checkbox, checked again server-side). Anyone can remove themselves
+  from the page, or via `DELETE /people/{id}` or `face_store.py --delete`.
+- **Never commit `~/.campus_bot/`** (`faces.enc`, `faces.key`, calibration CSVs) or any ngrok token.
+  Losing `faces.key` means everyone re-enrols. Back it up somewhere other than git.
