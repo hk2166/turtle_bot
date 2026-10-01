@@ -9,7 +9,11 @@
 #pragma once
 
 // ---------- Geometry (calibrate with tools/calibrate_odom.py, then edit here) ----------
-#define WHEEL_DIA        0.100f   // m, 100 mm disc wheel; straight-line calibration scales this
+// Calibrated 2026-10-01 (tools/calibrate_odom.py, office carpet): effective diameter 89.9 mm
+// (100 mm disc, carpet squish); separation confirmed ~0.350. The running (original) firmware still
+// uses 100 mm — the Pi corrects it in odom_to_tf.py (ODOM_*_SCALE in config/robot.env). If THIS
+// firmware is flashed with the value below, set those scales back to 1.0.
+#define WHEEL_DIA        0.0899f  // m, effective on carpet; straight-line calibration scales this
 #define WHEEL_SEP        0.350f   // m, nominal 340–360; spin calibration sets the EFFECTIVE value
 #define STEPS_PER_REV    1600     // DM542 DIP setting (no gearbox)
 #define INVERT_LEFT      false    // VERIFY: motors are mirrored, one side normally needs inverting

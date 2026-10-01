@@ -123,7 +123,8 @@ say "3/6 odom → base_link"
 if is_running odom_tf; then ok "odom_to_tf.py running"
 elif python3 tools/pose_tool.py probe odom base_link --timeout 3; then ok "provided by the firmware"
 else
-  start_bg odom_tf python3 nodes/odom_to_tf.py --ros-args -p odom_topic:="$ODOM_TOPIC"
+  start_bg odom_tf python3 nodes/odom_to_tf.py --ros-args -p odom_topic:="$ODOM_TOPIC" \
+    -p odom_lin_scale:="${ODOM_LIN_SCALE:-1.0}" -p odom_ang_scale:="${ODOM_ANG_SCALE:-1.0}"
   python3 tools/pose_tool.py probe odom base_link --timeout 5 && ok "odom_to_tf.py broadcasting it" \
     || { err "odom → base_link still missing: see $LOG_DIR/odom_tf.log"; exit 1; }
 fi
