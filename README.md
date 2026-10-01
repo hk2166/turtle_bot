@@ -70,7 +70,7 @@ STOP and Power watch are also desktop icons (the "Campus Bot …" launchers; rei
 | `python3 tools/preflight.py` | The readiness sweep on its own. |
 | `python3 tools/calibrate_mask.py` | Measures the column mask and writes `config/scan_mask.yaml`. |
 | `python3 tools/lidar_front.py` | Checks `LASER_YAW`. |
-| `python3 tools/check_motion.py` | Drive a little while it records: checks that the lidar and the odometry agree (`LASER_YAW`, rotation sign, odometry scale). Run it before mapping. |
+| `run/check_motion.sh` / `python3 tools/check_motion.py` | Drive a little while it records: checks that the lidar and the odometry agree (`LASER_YAW`, rotation sign, odometry scale). Run it before mapping. |
 | `python3 tools/clean_map.py maps/<area>.yaml` | Re-cleans a saved map. |
 | `run/hw_check.sh [--apply]` | First contact: identifies the ports, tests the lidar, checks the ESP32's micro-ROS link and topics, and suggests `robot.env` values. |
 | `python3 tools/esp32_reset.py` | Safe ESP32 reset that reports whether the firmware or the ROM loader booted. |

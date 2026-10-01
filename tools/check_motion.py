@@ -19,6 +19,7 @@ SLAM can't map with LASER_YAW wrong: every straight move is applied in the wrong
 import argparse
 import math
 import os
+import signal
 import sys
 import time
 
@@ -26,6 +27,7 @@ import numpy as np
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.signals import SignalHandlerOptions
 from scipy.spatial import cKDTree
 from sensor_msgs.msg import LaserScan
 
@@ -168,7 +170,12 @@ def main():
     ap.add_argument('--seconds', type=float, default=90.0)
     ap.add_argument('--min-range', type=float, default=0.45, help='ignore returns closer than this (the columns)')
     a = ap.parse_args()
-    rclpy.init()
+    # Ctrl-C or SIGTERM (run/check_motion.sh) ends the recording and goes on to the analysis.
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+
+    def stop(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, stop)
     node = rclpy.create_node('check_motion')
     scans, odo = [], []
     node.create_subscription(LaserScan, a.scan, lambda m: scans.append(
