@@ -1,0 +1,8 @@
+# >>> campus_bot xrdp >>>
+# Remote desktop (xrdp) sessions only: plain X input, so Ubuntu's im-config (70im-config_launch,
+# which runs before ~/.xsession) doesn't start ibus there ("ibus should be started" warnings).
+# The monitor's GNOME login doesn't set XRDP_SESSION and keeps its ibus.
+if [ -n "${XRDP_SESSION:-}" ]; then
+  export GTK_IM_MODULE=xim QT_IM_MODULE=xim XMODIFIERS=@im=none
+fi
+# <<< campus_bot xrdp <<<

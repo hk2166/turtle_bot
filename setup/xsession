@@ -7,7 +7,17 @@
 export GTK_IM_MODULE=xim QT_IM_MODULE=xim XMODIFIERS=@im=none IM_CONFIG_PHASE=2
 if command -v startxfce4 >/dev/null 2>&1; then
   export XDG_CURRENT_DESKTOP=XFCE XDG_SESSION_DESKTOP=xfce
-  exec startxfce4
+  # The user's systemd D-Bus (/run/user/1000/bus) belongs to the GNOME login on the monitor, and
+  # hands every service it starts that session's DISPLAY=wayland-0. XFCE's panel, window manager
+  # and desktop then exit with "cannot open display" and only a black root window is left (seen
+  # 2026-10-01). A private bus for this session keeps the two desktops apart.
+  unset DBUS_SESSION_BUS_ADDRESS
+  # GTK tries Wayland before X11 and finds the monitor's GNOME socket (/run/user/1000/wayland-0):
+  # the panel, xfdesktop and xfsettingsd then open THAT display and die ("Could not open X
+  # display"). Pin every toolkit to the X server xrdp gave us.
+  export GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb SDL_VIDEODRIVER=x11 XDG_SESSION_TYPE=x11
+  unset WAYLAND_DISPLAY
+  exec dbus-run-session -- startxfce4
 fi
 # XFCE not installed yet (sudo bash setup/05_remote_access.sh installs it): GNOME, which only works
 # when nobody is logged in on the monitor.
