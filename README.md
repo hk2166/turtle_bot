@@ -88,10 +88,9 @@ Logs go to `~/.campus_bot/logs/<name>.log` (bringup, slam, nav, rviz, odom_tf, m
 - **Terminal:** `ssh resp@resp-desktop.local`. If `.local` doesn't resolve, use the IP from `hostname -I`;
   it can change, so a DHCP reservation for the MAC in `/sys/class/net/wlan0/address` helps. Run long jobs
   inside `tmux new -A -s robot`, so a WiFi drop doesn't end a mapping run.
-- **Screen:** Windows App → Add PC → `resp-desktop.local`, user `resp`. The remote desktop is **black** if
-  `resp` is also logged in on the robot's own monitor. Boot without logging in, or end the monitor
-  session from SSH. This closes everything open on that screen:
-  `loginctl terminate-session $(loginctl list-sessions --no-legend | awk '$4=="seat0"{print $1}')`
+- **Screen:** Windows App → Add PC → `resp-desktop.local`, user `resp`. The remote desktop is its own
+  **XFCE** desktop, separate from the GNOME one on the robot's monitor. A second GNOME for the same user
+  crashes both ("Oh no! Something has gone wrong").
 - **Code:** VS Code on the Mac → Remote-SSH → `resp@resp-desktop.local` → open `~/Desktop/campus_bot_fw`.
 - **Driving:**
   - In remote desktop, `run/drive.sh` opens the hold-to-drive window. It **stops by itself if the link

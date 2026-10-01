@@ -1,0 +1,13 @@
+#!/bin/sh
+# campus_bot: the desktop for xrdp remote-desktop logins (only xrdp uses this file; the monitor login
+# goes through GDM). A second GNOME for a user already logged in on the monitor makes both crash
+# ("Oh no! Something has gone wrong"), so remote sessions get XFCE, which runs alongside GNOME.
+if command -v startxfce4 >/dev/null 2>&1; then
+  export XDG_CURRENT_DESKTOP=XFCE XDG_SESSION_DESKTOP=xfce
+  exec startxfce4
+fi
+# XFCE not installed yet (sudo bash setup/05_remote_access.sh installs it): GNOME, which only works
+# when nobody is logged in on the monitor.
+export GNOME_SHELL_SESSION_MODE=ubuntu XDG_CURRENT_DESKTOP=ubuntu:GNOME XDG_SESSION_DESKTOP=ubuntu
+export XDG_CONFIG_DIRS=/etc/xdg/xdg-ubuntu:/etc/xdg
+exec gnome-session

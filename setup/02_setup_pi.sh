@@ -202,17 +202,9 @@ fi
 sudo systemctl enable --now avahi-daemon
 getent group ssl-cert >/dev/null && sudo usermod -aG ssl-cert xrdp
 sudo systemctl enable --now xrdp
-# GNOME inside xrdp needs the Ubuntu session variables, or it comes up as a black/plain screen.
-if ! grep -qs '>>> campus_bot xrdp >>>' "$HOME/.xsessionrc"; then
-  cat >> "$HOME/.xsessionrc" <<'EOF'
-# >>> campus_bot xrdp >>>
-export GNOME_SHELL_SESSION_MODE=ubuntu
-export XDG_CURRENT_DESKTOP=ubuntu:GNOME
-export XDG_SESSION_DESKTOP=ubuntu
-export XDG_CONFIG_DIRS=/etc/xdg/xdg-ubuntu:/etc/xdg
-# <<< campus_bot xrdp <<<
-EOF
-fi
+# Remote desktop sessions: XFCE via ~/.xsession (setup/05_remote_access.sh installs it). A second
+# GNOME for a user logged in on the monitor crashes both.
+cp "$PROJECT_DIR/setup/xsession" "$HOME/.xsession" 2>/dev/null && chmod +x "$HOME/.xsession" || true
 sleep 2
 if ! systemctl is-active --quiet xrdp; then
   warn "xrdp isn't running. If GNOME's own Settings → System → Remote Desktop → Remote Login is on, it holds port 3389 — turn it off and re-run."

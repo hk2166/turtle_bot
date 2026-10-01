@@ -23,13 +23,13 @@ have_pkg() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok
 
 log "Packages"
 missing=()
-for p in openssh-server xrdp xorgxrdp avahi-daemon iw; do have_pkg "$p" || missing+=("$p"); done
+for p in openssh-server xrdp xorgxrdp avahi-daemon iw xfce4 xfce4-terminal dbus-x11; do have_pkg "$p" || missing+=("$p"); done
 if ((${#missing[@]})); then
   info "installing: ${missing[*]}"
   DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}" \
     || { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"; }
 fi
-ok "openssh-server, xrdp, xorgxrdp, avahi-daemon, iw"
+ok "openssh-server, xrdp, xorgxrdp, avahi-daemon, iw, xfce4 (remote-desktop desktop)"
 
 log "SSH (port 22)"
 systemctl enable --now ssh.socket >/dev/null 2>&1 || systemctl enable --now ssh
@@ -56,8 +56,11 @@ polkit.addRule(function (action, subject) {
   }
 });
 EOF
-if grep -qs '>>> campus_bot xrdp >>>' "/home/$U/.xsessionrc"; then ok "GNOME session settings in ~$U/.xsessionrc"
-else warn "~$U/.xsessionrc has no campus_bot block: re-run 02_setup_pi.sh step 8, or the remote desktop may be black"; fi
+# Remote sessions run XFCE: a second GNOME for a user already logged in on the monitor crashes both
+# ("Oh no! Something has gone wrong", seen 2026-10-01). ~/.xsession is read only by xrdp logins.
+install -m 0755 -o "$U" -g "$U" "$(dirname "$0")/xsession" "/home/$U/.xsession"
+sed -i '/# >>> campus_bot xrdp >>>/,/# <<< campus_bot xrdp <<</d' "/home/$U/.xsessionrc" 2>/dev/null || true
+ok "remote desktop sessions use XFCE (~$U/.xsession); the monitor keeps GNOME"
 systemctl is-active --quiet xrdp && ok "xrdp running" || warn "xrdp isn't running: journalctl -u xrdp"
 
 log "WiFi"
@@ -98,8 +101,7 @@ IP="$(ip -4 -o addr show "${DEV:-wlan0}" 2>/dev/null | awk '{print $4}' | cut -d
 info "Terminal:        ssh $U@$(hostname).local        (or ssh $U@${IP:-<ip>})"
 info "Remote desktop:  Windows App (Mac) / Remote Desktop → PC name $(hostname).local (or ${IP:-<ip>}), user $U"
 if loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$U" '$3==u && $4=="seat0"' | grep -q .; then
-  warn "$U is logged in on the robot's own screen right now. xrdp shows a BLACK screen for a user who is"
-  warn "also logged in locally: log out there (or reboot without logging in) before using remote desktop."
+  info "$U is also logged in on the robot's monitor: fine, remote desktop gets its own XFCE desktop."
 fi
 info "Security: SSH and remote desktop accept $U's password from anywhere on the office WiFi."
 info "Use a strong password (passwd), and preferably SSH keys (see README → Remote access)."
