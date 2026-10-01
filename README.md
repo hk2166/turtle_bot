@@ -91,6 +91,11 @@ Logs go to `~/.campus_bot/logs/<name>.log` (bringup, slam, nav, rviz, odom_tf, m
 - **Screen:** Windows App → Add PC → `resp-desktop.local`, user `resp`. The remote desktop is its own
   **XFCE** desktop, separate from the GNOME one on the robot's monitor. A second GNOME for the same user
   crashes both ("Oh no! Something has gone wrong").
+- **The robot's own GNOME screen (mirrored):** GNOME Desktop Sharing on **port 3390**. In Windows App,
+  use PC name `resp-desktop.local:3390`. Set its login once, in a terminal on the Pi:
+  `grdctl rdp set-credentials resp '<a password>'`. It only works while someone is logged in to GNOME on
+  the monitor. With no monitor attached, GNOME needs an HDMI dummy plug to have a screen to share. To
+  turn it off: `grdctl rdp disable`.
 - **Code:** VS Code on the Mac → Remote-SSH → `resp@resp-desktop.local` → open `~/Desktop/campus_bot_fw`.
 - **Driving:**
   - In remote desktop, `run/drive.sh` opens the hold-to-drive window. It **stops by itself if the link
