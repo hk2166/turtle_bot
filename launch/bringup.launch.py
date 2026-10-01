@@ -23,7 +23,7 @@ ARGS = {
     'sim': 'false',
     'lidar_port': '/dev/ttyUSB0', 'lidar_baud': '460800', 'lidar_scan_mode': 'Standard',
     'esp32_port': '/dev/esp32', 'agent_baud': '115200',
-    'scan_topic': '/scan', 'scan_filtered_topic': '/scan_filtered',
+    'scan_topic': '/scan', 'scan_filtered_topic': '/scan_filtered', 'scan_min_range': '0.25',
     'laser_x': '0.0', 'laser_y': '0.0', 'laser_z': '0.215', 'laser_yaw': '0.0',
     'imu_x': '0.0', 'imu_y': '0.0', 'imu_z': '0.06',
     'camera_x': '0.0', 'camera_y': '0.0', 'camera_z': '1.25',
@@ -68,7 +68,8 @@ def generate_launch_description():
             ExecuteProcess(
                 cmd=['python3', os.path.join(NODES, 'scan_filter.py'), '--ros-args',
                      '-p', ['in_topic:=', LC('scan_topic')],
-                     '-p', ['out_topic:=', LC('scan_filtered_topic')]],
+                     '-p', ['out_topic:=', LC('scan_filtered_topic')],
+                     '-p', ['min_range:=', LC('scan_min_range')]],
                 name='scan_filter', output='screen'),
             static_tf('laser', 'laser', LC('laser_x'), LC('laser_y'), LC('laser_z'), LC('laser_yaw')),
             # the firmware stamps /imu/data_raw with frame imu_link (seen on the robot 2026-10-01)

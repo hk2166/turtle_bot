@@ -87,6 +87,7 @@ else
     lidar_port:="$LIDAR_DEV" lidar_baud:="$LIDAR_BAUD" lidar_scan_mode:="$LIDAR_SCAN_MODE" \
     esp32_port:="$ESP32_DEV" agent_baud:="$AGENT_BAUD" \
     scan_topic:="$SCAN_TOPIC" scan_filtered_topic:="$SCAN_FILTERED_TOPIC" \
+    scan_min_range:="${SCAN_MIN_RANGE:-0.25}" \
     laser_x:="$LASER_X" laser_y:="$LASER_Y" laser_z:="$LASER_Z" laser_yaw:="$LASER_YAW" \
     imu_x:="$IMU_X" imu_y:="$IMU_Y" imu_z:="$IMU_Z" \
     camera_x:="$CAMERA_X" camera_y:="$CAMERA_Y" camera_z:="$CAMERA_Z" \

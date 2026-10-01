@@ -30,6 +30,10 @@ class ScanFilter(Node):
         self.in_topic = self.declare_parameter('in_topic', '/scan').value
         self.out_topic = self.declare_parameter('out_topic', '/scan_filtered').value
         self.mask_file = self.declare_parameter('mask_file', MASK_FILE).value
+        # Nothing but the robot itself (columns at 0.19-0.21 m, the camera cable) can be this close to
+        # the lidar. Driving vibration lets column returns slip past the sector edges; one such return
+        # lands on the robot's own footprint and Nav2 calls it a collision (seen 2026-10-01).
+        self.min_range = float(self.declare_parameter('min_range', 0.25).value)
         self.pub = self.create_publisher(LaserScan, self.out_topic, 10)
         self.sub = self.create_subscription(LaserScan, self.in_topic, self.on_scan, qos_profile_sensor_data)
         self._mtime = None
@@ -62,16 +66,18 @@ class ScanFilter(Node):
             self._idx = mask_indices(msg.angle_min, msg.angle_increment, len(msg.ranges), self._sectors)
             self._cache_key = key
             self.get_logger().info(f'{len(self._idx)} of {len(msg.ranges)} beams masked')
-        if self._idx:
-            ranges = list(msg.ranges)
-            for i in self._idx:
+        ranges = list(msg.ranges)
+        drop = set(self._idx)
+        for i, r in enumerate(ranges):
+            if i in drop or r < self.min_range:
                 ranges[i] = float('inf')
-            msg.ranges = ranges
-            if msg.intensities:
-                inten = list(msg.intensities)
-                for i in self._idx:
-                    inten[i] = 0.0
-                msg.intensities = inten
+                drop.add(i)
+        msg.ranges = ranges
+        if msg.intensities and drop:
+            inten = list(msg.intensities)
+            for i in drop:
+                inten[i] = 0.0
+            msg.intensities = inten
         self.pub.publish(msg)
 
 
