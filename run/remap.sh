@@ -37,7 +37,7 @@ for a in "$@"; do
 done
 [[ -n "$AREA" ]] || { sed -n '2,26p' "$0"; exit 2; }
 [[ "$AREA" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Area name: letters, digits, _ and - only" >&2; exit 2; }
-[[ -z "${DISPLAY:-}" ]] && RVIZ=0
+if (( RVIZ )) && ! use_robot_screen; then RVIZ=0; fi
 MAP="$PROJECT_DIR/maps/$AREA"
 TAGS_REC="$RUN_DIR/tags_recording.yaml"
 (( SIM )) && CAMERA=0
@@ -217,32 +217,41 @@ if (( NAV )); then
   say "Autonomy: AMCL + Nav2 on maps/${AREA}_clean.yaml"
   POSE=""
   (( NAV_ONLY )) || POSE="$(python3 tools/pose_tool.py get || true)"
-  stop_bg slam
+  stop_bg slam; stop_bg nav; stop_bg loc
   if (( RVIZ )) && ! is_running rviz; then start_bg rviz rviz2 -d "$PROJECT_DIR/config/campus_bot.rviz"; fi
+  # One composed process (separate processes loaded the Pi to a load average of 20). Until the robot
+  # has a pose the planner waits for it (initial_transform_timeout in config/nav2_params.yaml).
   start_bg nav ros2 launch nav2_bringup bringup_launch.py \
     map:="${MAP}_clean.yaml" params_file:="$PROJECT_DIR/config/nav2_params.yaml" \
     use_sim_time:=False autostart:=True use_composition:=True
-  if timeout 40 bash -c 'until ros2 node list 2>/dev/null | grep -q /amcl; do sleep 1; done'; then
-    sleep 5
-    if [[ -n "$POSE" ]]; then
-      # shellcheck disable=SC2086
-      python3 tools/pose_tool.py set $POSE && ok "initial pose = where mapping ended ($POSE)"
-    fi
-    if (( CAM_UP )) && [[ -f "${MAP}_tags.yaml" ]]; then
-      stop_bg tags >/dev/null
-      start_bg tags python3 nodes/tag_map.py --ros-args -p mode:=localize -p tags_file:="${MAP}_tags.yaml" \
-        -p odom_topic:="$ODOM_TOPIC"
-      ok "camera localization on: a tag pair in view sets/corrects AMCL's pose (log: $LOG_DIR/tags.log)"
-      [[ -n "$POSE" ]] || info "no pose yet: point the camera at a tag pair (or 2D Pose Estimate in RViz)"
-    elif [[ -z "$POSE" ]]; then
-      warn "set the initial pose in RViz (2D Pose Estimate)"
-      if (( CAMERA )) && [[ ! -f "${MAP}_tags.yaml" ]]; then
-        info "(no maps/${AREA}_tags.yaml: re-map with tags up to get the pose automatically)"
-      fi
-    fi
+  if ! timeout --foreground 60 bash -c 'until ros2 lifecycle get /amcl 2>/dev/null | grep -q "^active"; do sleep 1; done'; then
+    err "AMCL didn't come up: see $LOG_DIR/nav.log"; exit 1
+  fi
+  ok "map server + AMCL up (log: $LOG_DIR/nav.log)"
+  if [[ -n "$POSE" ]]; then
+    # shellcheck disable=SC2086
+    python3 tools/pose_tool.py set $POSE && ok "initial pose = where mapping ended ($POSE)"
+  fi
+  if (( CAM_UP )) && [[ -f "${MAP}_tags.yaml" ]]; then
+    stop_bg tags >/dev/null
+    start_bg tags python3 nodes/tag_map.py --ros-args -p mode:=localize -p tags_file:="${MAP}_tags.yaml" \
+      -p odom_topic:="$ODOM_TOPIC"
+    ok "camera localization on: a tag pair in view sets/corrects AMCL's pose (log: $LOG_DIR/tags.log)"
+  fi
+  if ! python3 tools/pose_tool.py probe map base_link --timeout 3; then
+    say "Waiting for the robot's pose"
+    info "Robot near where mapping started?  run/reset_pose.sh   (fits the scan to the map there)"
+    if (( RVIZ )); then info "Or in RViz: click '2D Pose Estimate' FIRST, then click where the robot is and drag the way it faces."
+    else info "Or open RViz on the robot's desktop (VNC / monitor): rviz2 -d config/campus_bot.rviz"; fi
+    (( CAM_UP )) && [[ -f "${MAP}_tags.yaml" ]] && info "Or turn the robot to face a tag pair."
+    info "(waits up to 30 min; Ctrl-C stops waiting, Nav2 keeps waiting for a pose)"
+    python3 tools/pose_tool.py probe map base_link --timeout 1800 || { err "no pose set"; exit 1; }
+  fi
+  ok "robot pose known: $(python3 tools/pose_tool.py get 2>/dev/null)"
+  if timeout --foreground 90 bash -c 'until ros2 lifecycle get /bt_navigator 2>/dev/null | grep -q "^active"; do sleep 1; done'; then
     ok "Nav2 up. In RViz: 'Nav2 Goal' to send the robot somewhere. Logs: $LOG_DIR/nav.log"
   else
-    err "Nav2 didn't come up: see $LOG_DIR/nav.log"
+    err "Nav2's navigation nodes didn't all start: see $LOG_DIR/nav.log"
   fi
   info "Stop everything with: run/stop.sh"
 else

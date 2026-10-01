@@ -56,7 +56,8 @@ STOP and Power watch are also desktop icons (the "Campus Bot …" launchers; rei
 | Command | What it does |
 |---|---|
 | `run/remap.sh <area> [--nav] [--no-camera] [--no-rviz] [--yes]` | Power check → sensors → odom TF → pre-flight → camera → SLAM + RViz → keyboard driving. `q` saves `maps/<area>` and `maps/<area>_clean`, a pose graph, a stats report and `maps/<area>_tags.yaml` (the AprilTags the camera saw). `--nav` then starts AMCL + Nav2 on the new map, with camera localization. |
-| `run/nav.sh <area>` | AMCL + Nav2 on a map saved earlier, no re-mapping. With `maps/<area>_tags.yaml` the camera finds the starting pose by itself. |
+| `run/nav.sh <area>` | AMCL + Nav2 on a map saved earlier, no re-mapping. Waits for the robot's pose (RViz "2D Pose Estimate", `run/reset_pose.sh`, or a tag pair) before the planner starts. Over SSH, RViz opens on the robot's own screen (monitor / VNC). |
+| `run/reset_pose.sh [X Y YAW_DEG] [--exact\|--wide\|--view]` | Sets the robot's pose by fitting the lidar scan to the map near a guess (default: where mapping started). `--view` reopens RViz with the saved view (dragging in RViz moves the view, not the robot). |
 | `run/remap.sh <area> --sim` | The same flow with a fake robot (no hardware), for testing changes. |
 | `run/drive.sh [--speed 0.25] [--terminal]` | **Hold-to-drive** window (the terminal driver over plain SSH): the robot moves only while ↑↓←→ / WASD is held; let go (or click away) and it stops at ≤ 0.5 m/s². Starts the ESP32 agent itself. In remote desktop it stops if the link goes silent for 1 s; over plain SSH it uses the terminal driver. |
 | `run/lidar_view.sh [--no-rviz]` | Live lidar: RViz (fixed frame `laser`, no TF needed) plus numbers in the terminal (rate, nearest obstacle, 8 sectors, ASCII top-down map). |

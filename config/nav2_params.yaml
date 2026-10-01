@@ -172,6 +172,9 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
+      # Wait (up to 30 min) for the robot's pose in the map instead of aborting Nav2's start-up after
+      # 60 s: with run/nav.sh nobody may have set the pose yet (2D Pose Estimate, reset_pose.sh, tags).
+      initial_transform_timeout: 1800.0
       update_frequency: 1.0
       publish_frequency: 1.0
       global_frame: map

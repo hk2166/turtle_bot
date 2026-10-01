@@ -24,7 +24,7 @@ STRAYS=(
 say "Stopping Campus Bot"
 # 1. Anything that commands the motors goes first, so nothing overrides the zero command.
 pkill -INT -f "$DRIVERS" 2>/dev/null || true
-stop_bg nav
+stop_bg nav; stop_bg loc
 # 2. Zero velocity while the agent is still up to carry it to the ESP32.
 if is_running bringup || is_running agent || pgrep -f "$AGENT" >/dev/null; then
   timeout 6 ros2 topic pub -t 5 -r 10 "$CMD_VEL_TOPIC" geometry_msgs/msg/Twist '{}' >/dev/null 2>&1 \

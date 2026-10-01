@@ -99,6 +99,20 @@ port_busy() {  # port_busy DEV : true, and says who, if another program already 
   return 0
 }
 
+use_robot_screen() {  # over SSH (no DISPLAY): show windows on the robot's own desktop (monitor / VNC) if one is up
+  [[ -n "${DISPLAY:-}" ]] && return 0
+  local xa
+  [[ -S /tmp/.X11-unix/X0 ]] || return 1
+  for xa in "/run/user/$(id -u)/gdm/Xauthority" /run/user/"$(id -u)"/.mutter-Xwaylandauth.*; do
+    if [[ -r "$xa" ]]; then
+      export DISPLAY=:0 XAUTHORITY="$xa"
+      info "windows (RViz) open on the robot's own screen: the monitor, or VNC"
+      return 0
+    fi
+  done
+  return 1
+}
+
 resolve_ports() {  # sets LIDAR_DEV and ESP32_DEV from LIDAR_PORT / ESP32_PORT (auto = udev names first)
   local c lt et
   if [[ "$ESP32_PORT" != auto ]]; then ESP32_DEV="$ESP32_PORT"
