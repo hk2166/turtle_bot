@@ -15,3 +15,9 @@ recovered/
 
 # PlatformIO build output
 .pio/
+
+# maps: commit the .yaml/.pgm/report (small); the slam_toolbox pose graph (~10 MB per map) and the
+# automatic backups of replaced maps stay local
+maps/*.posegraph
+maps/*.data
+maps/.prev/
