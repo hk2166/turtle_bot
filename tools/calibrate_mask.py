@@ -75,6 +75,22 @@ def main():
     groups.append(cur)
     if len(groups) > 1 and groups[0][0] == 0 and groups[-1][-1] == n - 1:
         groups[0] = groups.pop() + groups[0]
+    # A column can drop a beam now and then, which splits it into two sectors with a 1–2 beam leak
+    # between them (seen on the robot 2026-10-01). Merge sectors separated by ≤ MERGE_GAP beams.
+    MERGE_GAP = 2
+    merged = [groups[0]]
+    for g in groups[1:]:
+        gap = (g[0] - merged[-1][-1] - 1) % n
+        if gap <= MERGE_GAP:
+            merged[-1] = merged[-1] + [(merged[-1][-1] + k) % n for k in range(1, gap + 1)] + g
+        else:
+            merged.append(g)
+    if len(merged) > 1 and (merged[0][0] - merged[-1][-1] - 1) % n <= MERGE_GAP:
+        last = merged.pop()
+        gap = (merged[0][0] - last[-1] - 1) % n
+        merged[0] = last + [(last[-1] + k) % n for k in range(1, gap + 1)] + merged[0]
+    groups = merged
+    padded = {i for g in groups for i in g}
 
     angles = beam_angles_deg(ref.angle_min, ref.angle_increment, n)
     half = math.degrees(ref.angle_increment) / 2 * 0.99   # sector edges halfway between beams

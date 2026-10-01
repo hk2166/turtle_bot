@@ -65,6 +65,22 @@ wait_topic() {  # wait_topic TOPIC SECONDS : true once one message arrives
   return 1
 }
 
+esp32_reset() {  # esp32_reset [DEV] : safe reset through the S3's native USB (see tools/esp32_reset.py)
+  local out rc=0
+  out="$(python3 "$PROJECT_DIR/tools/esp32_reset.py" "${1:-${ESP32_DEV:-/dev/esp32}}" 2>&1)" || rc=$?
+  sed 's/^/    /' <<<"$out"
+  return "$rc"
+}
+
+agent_session() {  # agent_session LOG FROM_LINE SECS : true once the agent logs a client session after FROM_LINE
+  local log="$1" from="$2" end=$((SECONDS + $3))
+  while (( SECONDS < end )); do
+    tail -n +"$from" "$log" 2>/dev/null | grep -q 'session established' && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
 resolve_ports() {  # sets LIDAR_DEV and ESP32_DEV from LIDAR_PORT / ESP32_PORT (auto = udev names first)
   local c lt et
   if [[ "$ESP32_PORT" != auto ]]; then ESP32_DEV="$ESP32_PORT"

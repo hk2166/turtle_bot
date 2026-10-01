@@ -8,24 +8,44 @@ set -uo pipefail
 # shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# Processes are matched on how their command line STARTS (the executable, or "python3 <script>.py").
+# A loose `pkill -f micro_ros_agent` also kills any shell, editor or log viewer whose command line
+# merely mentions the word: on 2026-10-01 that killed a running hw_check.sh and its caller.
+DRIVERS='^([^ ]*/)?python3 ([^ ]*/)?(teleop_keys|drive_hold)\.py'
+AGENT='^([^ ]*/)?micro_ros_agent( |$)|^([^ ]*/)?python3 ([^ ]*/)?sim_robot\.py'
+STRAYS=(
+  "$DRIVERS"
+  '^([^ ]*/)?python3 ([^ ]*/)?(scan_monitor|odom_to_tf|scan_filter|sim_robot)\.py'
+  '^([^ ]*/)?(rviz2|micro_ros_agent|sllidar_node|async_slam_toolbox_node|static_transform_publisher|v4l2_camera_node|map_saver_cli|component_container[^ ]*|lifecycle_manager)( |$)'
+  '^/opt/ros/jazzy/lib/(nav2_|opennav_)[^ ]*'
+  '^([^ ]*/)?python3 [^ ]*/ros2 (launch [^ ]*campus_bot_fw|launch nav2_bringup|run (micro_ros_agent|sllidar_ros2|v4l2_camera|nav2_map_server|slam_toolbox))'
+)
+
 say "Stopping Campus Bot"
 # 1. Anything that commands the motors goes first, so nothing overrides the zero command.
-pkill -INT -f 'teleop_keys.py|drive_hold.py' 2>/dev/null || true
+pkill -INT -f "$DRIVERS" 2>/dev/null || true
 stop_bg nav
 # 2. Zero velocity while the agent is still up to carry it to the ESP32.
-if is_running bringup || pgrep -f micro_ros_agent >/dev/null || pgrep -f sim_robot.py >/dev/null; then
+if is_running bringup || is_running agent || pgrep -f "$AGENT" >/dev/null; then
   timeout 6 ros2 topic pub -t 5 -r 10 "$CMD_VEL_TOPIC" geometry_msgs/msg/Twist '{}' >/dev/null 2>&1 \
     && ok "zero velocity sent on $CMD_VEL_TOPIC" || warn "couldn't send zero velocity (the 300 ms watchdog stops the motors anyway)"
 fi
 # 3. Everything we started.
 for name in slam rviz rviz_lidar camera odom_tf lidar agent bringup; do stop_bg "$name"; done
-# 4. Strays by name.
-PATTERNS=(teleop_keys.py drive_hold.py scan_monitor.py async_slam_toolbox_node rviz2 v4l2_camera_node odom_to_tf.py
-          static_transform_publisher scan_filter.py sim_robot.py micro_ros_agent sllidar_node
-          map_saver_cli nav2_ component_container lifecycle_manager opennav_docking
-          'ros2 launch .*campus_bot_fw' 'ros2 launch nav2_bringup')
-for p in "${PATTERNS[@]}"; do pkill -INT -f "$p" 2>/dev/null && info "stray: $p"; done
-sleep 2
-for p in "${PATTERNS[@]}"; do pkill -KILL -f "$p" 2>/dev/null || true; done
-left="$(pgrep -af "$(IFS='|'; echo "${PATTERNS[*]}")" | grep -v -e pgrep -e 'stop.sh' || true)"
+# 4. Strays (crashed or orphaned runs), matched precisely (see STRAYS above).
+found=0
+for p in "${STRAYS[@]}"; do
+  if pgrep -f "$p" >/dev/null; then
+    pgrep -af "$p" | cut -c1-110 | sed 's/^/      stray: /'
+    pkill -INT -f "$p" 2>/dev/null || true
+    found=1
+  fi
+done
+if (( found )); then
+  sleep 2
+  for p in "${STRAYS[@]}"; do pkill -TERM -f "$p" 2>/dev/null || true; done
+  sleep 1
+  for p in "${STRAYS[@]}"; do pkill -KILL -f "$p" 2>/dev/null || true; done
+fi
+left="$(for p in "${STRAYS[@]}"; do pgrep -af "$p"; done | sort -u || true)"
 if [[ -n "$left" ]]; then warn "still running:"; echo "$left" | sed 's/^/      /'; else ok "all stopped"; fi

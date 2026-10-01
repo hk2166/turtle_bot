@@ -29,4 +29,10 @@ To roll back: `~/.venvs/esptool/bin/esptool --chip esp32s3 -p /dev/esp32 write-f
 | `bumper_tripped` | `std_msgs/Bool` | Publishes on every change and every 500 ms. True means the NC loop is open. |
 | `parcel/weight_g` | `std_msgs/Float32` | 5 Hz, only when the HX711 answered at boot. |
 
-Transport: micro-ROS serial over the native USB CDC (`/dev/esp32`), agent at 115200. The log goes to UART0.
+QoS (measured on the original, 2026-10-01): all four publishers RELIABLE + VOLATILE, the `cmd_vel`
+subscription BEST_EFFORT.
+
+Transport: micro-ROS serial over the native USB CDC (`/dev/esp32`), agent at 115200 (the baud is
+ignored on native USB). The log goes to UART0. Reset it only with `tools/esp32_reset.py`: on the S3's
+native USB, a plain RTS pulse while DTR is high arms download mode, and the next reset then boots the
+ROM loader instead of this firmware.

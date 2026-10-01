@@ -28,6 +28,10 @@ make campusbot-1-hwcheck.desktop "Campus Bot 1 - Hardware check" "Find the lidar
   utilities-system-monitor hwcheck
 make campusbot-2-map.desktop "Campus Bot 2 - Map an area" "Pre-flight, SLAM, keyboard driving; q saves" \
   applications-science map
+make campusbot-5-drive.desktop "Campus Bot 3 - Drive (hold keys)" "Hold arrow keys / WASD to drive; let go to stop" \
+  input-keyboard drive
+make campusbot-6-lidar.desktop "Campus Bot - Lidar view" "Live lidar in RViz plus numbers" \
+  applications-science lidar
 make campusbot-3-stop.desktop "Campus Bot - STOP" "Zero velocity and stop everything" \
   process-stop stop
 make campusbot-4-power.desktop "Campus Bot - Power watch" "Watch the Pi 5 V rail for dips" \

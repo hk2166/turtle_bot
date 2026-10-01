@@ -5,14 +5,15 @@
 #
 #   1. USB serial devices: which is the lidar (CP2102), which is the ESP32, and do the udev names work?
 #   2. Lidar alone: does sllidar get scans at 460800?
-#   3. ESP32 alone: which port and baud does its micro-ROS client talk on? (tries each, resetting the board)
+#   3. ESP32 alone: which port (and, for a UART bridge, which baud) its micro-ROS client talks on.
+#      It resets the board only if the firmware doesn't connect by itself.
 #   4. ESP32 topics: odom / IMU / cmd_vel names and message types.
 #   5. Suggested robot.env values. With --apply they're written into config/robot.env.
 #
 #   run/hw_check.sh [--apply] [--skip-lidar] [--skip-esp32] [--bauds "115200 921600 ..."]
 #
 # It stops anything already running first (run/stop.sh) because it needs the serial ports to itself.
-# Nothing is written to the ESP32. The resets are the same RTS pulse the board's RESET button gives.
+# Nothing is written to the ESP32. The resets go through tools/esp32_reset.py (same as the RESET button).
 set -uo pipefail
 # shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -50,7 +51,7 @@ for dev in /dev/ttyUSB* /dev/ttyACM* ${HW_EXTRA_PORTS:-}; do   # HW_EXTRA_PORTS:
   ser="$(sed -n 's/^ID_SERIAL_SHORT=//p' <<<"$props")"; model="$(sed -n 's/^ID_MODEL=//p' <<<"$props")"
   case "$vid:$pid" in
     10c4:ea60) kind="CP2102 (lidar stick, or the ESP32 if its bridge is also a CP2102)" ;;
-    1a86:*)    kind="WCH CH34x (ESP32 board UART, likely)" ;;
+    1a86:*)    kind="WCH CH34x (ESP32 board UART: firmware log only, not micro-ROS)" ;;
     303a:*)    kind="Espressif native USB (ESP32-S3)" ;;
     0403:*)    kind="FTDI" ;;
     *)         kind="unknown" ;;
@@ -58,7 +59,7 @@ for dev in /dev/ttyUSB* /dev/ttyACM* ${HW_EXTRA_PORTS:-}; do   # HW_EXTRA_PORTS:
   KIND[$dev]="$vid:$pid"; SERIAL[$dev]="$ser"
   info "$dev  $vid:$pid  $model  serial=${ser:-none}  → $kind"
 done
-((${#PORTS[@]})) || { err "No /dev/ttyUSB* or /dev/ttyACM*. Plug in the lidar stick and the ESP32 (UART USB-C port), then re-run."; exit 1; }
+((${#PORTS[@]})) || { err "No /dev/ttyUSB* or /dev/ttyACM*. Plug in the lidar stick and the ESP32 (native USB-C port), then re-run."; exit 1; }
 for n in lidar esp32; do
   if [[ -e /dev/$n ]]; then ok "/dev/$n → $(readlink -f /dev/$n)"; else warn "/dev/$n missing (udev rule didn't match)"; fi
 done
@@ -110,7 +111,7 @@ fi
 # ------------------------------------------------------------------------------------------------
 ESP_PORT="" ESP_BAUD=""
 if (( DO_ESP )); then
-  say "3/5 ESP32 micro-ROS link (port × baud, resetting the board each try)"
+  say "3/5 ESP32 micro-ROS link"
   lt="$(readlink -f "${LIDAR_OK:-/dev/lidar}" 2>/dev/null || true)"
   CANDS=()
   [[ -e /dev/esp32 ]] && CANDS+=("$(readlink -f /dev/esp32)")
@@ -118,51 +119,63 @@ if (( DO_ESP )); then
   declare -A SEEN=()
   # AGENT_BAUD from robot.env goes first.
   ORDER="$AGENT_BAUD $(tr ' ' '\n' <<<"$BAUDS" | grep -vx "$AGENT_BAUD" | tr '\n' ' ')"
+  # hw_wait SECS: 2 = entities created (topics exist), 1 = session but no entities yet, 0 = nothing
+  hw_wait() {
+    local end=$((SECONDS + $1))
+    while (( SECONDS < end )); do
+      grep -qE 'create_datawriter|create_datareader' "$LOG_DIR/hw_agent.log" && return 2
+      sleep 0.5
+    done
+    grep -q 'session established' "$LOG_DIR/hw_agent.log" && return 1
+    return 0
+  }
   for dev in "${CANDS[@]}"; do
     [[ -n "${SEEN[$dev]:-}" ]] && continue; SEEN[$dev]=1
-    for baud in $ORDER; do
+    bauds="$ORDER"
+    # Native USB (Espressif 303a): the baud rate is ignored, so one try settles it. Sweeping bauds
+    # here only produced a lucky "921600" on 2026-10-01 and a wrong AGENT_BAUD suggestion.
+    [[ "${KIND[$dev]:-}" == 303a:* ]] && bauds="$AGENT_BAUD"
+    for baud in $bauds; do
       printf '    %s @ %-8s' "$dev" "$baud"
       : >"$LOG_DIR/hw_agent.log"
       start_bg hw_agent ros2 run micro_ros_agent micro_ros_agent serial --dev "$dev" -b "$baud" -v4
-      sleep 1.5
-      # Reset the ESP32 so its client pings the agent from a fresh boot (RTS → EN, like the RESET button).
-      python3 - "$dev" "$baud" <<'PY' 2>/dev/null || true
-import sys, time, serial
-s = serial.Serial()
-s.port, s.baudrate = sys.argv[1], int(sys.argv[2])
-s.dtr = False; s.rts = False
-s.open()
-s.rts = True; time.sleep(0.15); s.rts = False
-s.close()
-PY
-      found=0
-      for _ in $(seq 16); do
-        grep -qiE 'session established|create_client|create_participant' "$LOG_DIR/hw_agent.log" && { found=1; break; }
-        sleep 0.5
-      done
-      if (( found )); then
-        echo " ✓ session established"
+      # An idle firmware connects to a new agent in < 1 s (measured), so only reset if it doesn't.
+      # tools/esp32_reset.py never arms the S3's download mode (a plain RTS pulse with DTR up can
+      # leave it in the ROM loader). After a reset the firmware needs ~3 s to boot, and creating its
+      # topics can take another ~15 s when the agent is slow, so wait for the topics, not the session.
+      hw_wait 4; r=$?
+      if (( r < 2 )); then
+        printf 'resetting… '
+        esp32_reset "$dev" >/dev/null || true
+        hw_wait 25; r=$?
+      fi
+      if (( r == 2 )); then
+        echo "✓ connected, topics created"
         ESP_PORT="$dev"; ESP_BAUD="$baud"
         break 2
       fi
-      echo " –"
+      (( r == 1 )) && echo "session but no topics after 25 s (agent too slow? see $LOG_DIR/hw_agent.log)" || echo "–"
       stop_bg hw_agent >/dev/null
     done
   done
   if [[ -z "$ESP_PORT" ]]; then
-    err "The ESP32 never connected on any port/baud. Possibilities:"
-    err "  • micro-ROS runs on the OTHER USB-C port (native USB → /dev/ttyACM*): plug that one in too and re-run"
-    err "  • the firmware uses WiFi (UDP) instead of serial: check the strings from setup/04_backup_esp32.sh"
-    err "    (grep -i 'udp\\|8888\\|agent' ~/recovered/esp32-*/strings.txt); then: micro_ros_agent udp4 --port 8888"
-    err "  • the firmware waits for the agent only at boot and the reset didn't reach it: tap RESET by hand while re-running"
+    err "The ESP32 never connected. Possibilities:"
+    err "  • the cable is in the board's UART USB-C port: micro-ROS runs on the NATIVE port (lsusb: 303a:1001)"
+    err "  • it's stuck in the ROM loader: python3 tools/esp32_reset.py   (prints the boot mode)"
+    err "  • still nothing: unplug the ESP32's USB for 3 s, plug it back in, re-run"
   else
-    ok "ESP32 micro-ROS on $ESP_PORT at $ESP_BAUD baud"
-    [[ "$ESP_BAUD" != "$AGENT_BAUD" ]] && SUGGEST[AGENT_BAUD]="$ESP_BAUD"
+    if [[ "${KIND[$ESP_PORT]:-}" == 303a:* ]]; then ok "ESP32 micro-ROS on $ESP_PORT (native USB: the baud setting doesn't matter)"
+    else ok "ESP32 micro-ROS on $ESP_PORT at $ESP_BAUD baud"
+         [[ "$ESP_BAUD" != "$AGENT_BAUD" ]] && SUGGEST[AGENT_BAUD]="$ESP_BAUD"; fi
     if [[ ! -e /dev/esp32 || "$(readlink -f /dev/esp32)" != "$ESP_PORT" ]]; then SUGGEST[ESP32_PORT]="$ESP_PORT"; fi
 
     # --------------------------------------------------------------------------------------------
     say "4/5 What the ESP32 publishes and subscribes"
-    sleep 3
+    # DDS discovery of the agent's topics takes a few seconds: poll instead of a fixed sleep.
+    for _ in $(seq 15); do
+      ros2 topic list -t 2>/dev/null | grep -q 'nav_msgs/msg/Odometry' && break
+      sleep 1
+    done
     info "nodes: $(ros2 node list 2>/dev/null | tr '\n' ' ')"
     TOPICS="$(ros2 topic list -t 2>/dev/null | grep -vE '^/(parameter_events|rosout) ')"
     echo "$TOPICS" | sed 's/^/      /'

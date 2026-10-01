@@ -172,6 +172,28 @@ It publishes the masked scan that slam_toolbox consumes.
     with the card, so people must re-enrol.
   - **Camera:** the Brio 100 enumerates (UVC, MJPG). All four Pi USB ports were in use, so it was
     swapped out for the ESP32 during the check.
+  - **Incident, same day:** the first `run/drive.sh` "reset" left the ESP32 in its **ROM download loader**
+    ("waiting for download"), so it went silent: no session, no `/odom`. On the S3's native USB, DTR/RTS
+    are commands. DTR=1 + RTS=0 arms download mode, DTR=0 + RTS=1 resets, and 0/0 disarms. This port is
+    `-hupcl`, so the armed flag outlived the script, and the next reset booted the loader. Fixed with
+    `tools/esp32_reset.py`, which sets both lines in one ioctl and reads the ROM banner to confirm
+    `SPI_FAST_FLASH_BOOT`. **Never pulse RTS with pyserial on this port.** `drive.sh`, `remap.sh` and
+    `hw_check.sh` now use it.
+  - **Measured link behaviour (original firmware):**
+    - An idle firmware connects to a new agent in < 1 s, and reconnects by itself when the agent restarts.
+    - After a reset it boots in ~3 s.
+    - Creating its 5 entities can take up to ~15 s when the agent is slow: it recycles the session
+      every second until it gets through.
+    - The baud rate is ignored on native USB.
+    - QoS: every publisher is RELIABLE, the `cmd_vel` subscription is BEST_EFFORT.
+  - **Verified end to end on the hardware:** `run/hw_check.sh`, `run/drive.sh` (including recovery from the
+    loader), `run/lidar_view.sh`, `run/camera.sh` (30 Hz `/image_raw`), `run/stop.sh` and `run/remap.sh`.
+    The full mapping flow ran with the robot parked: pre-flight READY, map + pose graph saved. The face
+    engine ran on live Brio frames (detector 75 ms at det-size 640, 15 ms at 320).
+  - **Column mask** (dry run, robot not in open space yet): 4 columns at about −120°, −57°, +59° and
+    +128° in the laser frame. Columns at a 350×250 deck's corners would sit near ±35° and ±145° if the
+    lidar's 0° pointed forward, so **the lidar may be mounted rotated ~90°**. Check `LASER_YAW` with
+    `tools/lidar_front.py` before mapping.
 
 ## Plan
 1. Recover: steps 1–5 above.

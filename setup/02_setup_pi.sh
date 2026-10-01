@@ -160,7 +160,7 @@ mkdir -p "$MICROROS_WS/src"
     ros2 run micro_ros_setup build_agent.sh
   fi
 )
-info "Run: ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/esp32 -b 115200   (baud: TO VERIFY against the firmware)"
+info "Run: ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/esp32 -b 115200   (verified 2026-10-01)"
 
 # ---------------------------------------------------------------------------------------------
 step 7 "Serial devices: udev names, permissions, brltty"
@@ -173,10 +173,11 @@ sudo tee /etc/udev/rules.d/99-campus-bot.rules >/dev/null <<'EOF'
 
 # RPLIDAR C1 through the CP2102 USB-TTL stick (Silicon Labs) → /dev/lidar
 SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="lidar", ENV{ID_MM_DEVICE_IGNORE}="1"
-# ESP32-S3 native USB port (Espressif) → /dev/esp32
+# ESP32-S3 native USB port (Espressif) → /dev/esp32. micro-ROS runs on THIS port (verified 2026-10-01).
 SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", SYMLINK+="esp32", ENV{ID_MM_DEVICE_IGNORE}="1"
-# ESP32-S3 board UART port, if its bridge is a WCH CH34x → /dev/esp32
-SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", SYMLINK+="esp32", ENV{ID_MM_DEVICE_IGNORE}="1"
+# ESP32-S3 board UART port (WCH CH34x bridge): only the firmware's text log → /dev/esp32_log.
+# It must never be /dev/esp32, or the agent would talk micro-ROS to the log port.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", SYMLINK+="esp32_log", ENV{ID_MM_DEVICE_IGNORE}="1"
 EOF
 # brltty (braille display daemon) grabs CH34x/CP210x USB-serial adapters on Ubuntu — disable its udev hook.
 if have_pkg brltty; then
@@ -388,7 +389,7 @@ cat <<EOF
 Setup finished. Next:
   1. Reboot (groups, hostname, udev and kernel updates apply):   sudo reboot
   2. After reboot, with the OLD SD card in a USB reader:          bash $PROJECT_DIR/setup/03_recover_old_sd.sh
-  3. ESP32 plugged in by its UART USB-C port:                     bash $PROJECT_DIR/setup/04_backup_esp32.sh
+  3. ESP32 plugged in by its native USB-C port:                   bash $PROJECT_DIR/setup/04_backup_esp32.sh
   4. cd $PROJECT_DIR && claude   → "Read RECOVERY.md and continue the rebuild."
 Remote desktop from the Mac: Windows App → Add PC → $(hostname).local  (log out of the Pi's monitor session first).
 EOF

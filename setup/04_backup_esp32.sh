@@ -5,7 +5,8 @@
 # motor / odometry / IMU / micro-ROS code. Back it up before anything reflashes the board.
 # Reading is safe: esptool resets the board into its bootloader, reads, and resets it back.
 #
-#   Plug the ESP32 in by its UART USB-C port (the one you flash through), then:
+#   Plug the ESP32 in by its native USB-C port (/dev/esp32, Espressif 303a:1001; esptool reads
+#   and flashes through it), then:
 #     bash 04_backup_esp32.sh              # finds the port by itself
 #     bash 04_backup_esp32.sh /dev/ttyUSB1 # or name it
 #
@@ -35,7 +36,7 @@ if [[ -z "$PORT" ]]; then
       [[ -e "$dev" && "$dev" != "$LIDAR" ]] && PORTS+=("$dev")
     done
     case ${#PORTS[@]} in
-      0) die "No serial port found. Plug the ESP32's UART USB-C port into the Pi." ;;
+      0) die "No serial port found. Plug the ESP32's native USB-C port into the Pi." ;;
       1) PORT="${PORTS[0]}" ;;
       *) die "Several serial ports (${PORTS[*]}). Unplug the lidar, or re-run naming the ESP32 port: bash $0 /dev/ttyUSB1" ;;
     esac

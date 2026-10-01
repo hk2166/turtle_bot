@@ -22,6 +22,7 @@ Run it through run/drive.sh (that also starts the micro-ROS agent), or alone if 
 """
 import argparse
 import os
+import signal
 import sys
 import threading
 import time
@@ -30,6 +31,7 @@ import tkinter as tk
 import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Bool
 
@@ -64,6 +66,7 @@ class HoldDrive:
         self.quiet = 0          # zero messages still to send after stopping
         self.bumper = False
         self.odom = None
+        self.closing = False
 
         rclpy.init()
         self.node = rclpy.create_node('drive_hold')
@@ -90,15 +93,33 @@ class HoldDrive:
         self.root.bind('<FocusOut>', lambda e: self.release_all())
         self.root.protocol('WM_DELETE_WINDOW', self.quit)
         self.last_tick = time.monotonic()
-        # ROS callbacks run in their own thread so they never slow the 20 Hz loop below.
-        threading.Thread(target=self._spin, daemon=True).start()
+        # ROS callbacks run in their own thread so they never slow the 20 Hz loop below. It has its own
+        # executor and is stopped and joined before the node is destroyed (destroying a node under a
+        # running rclpy.spin() aborts the whole process).
+        self.executor = SingleThreadedExecutor()
+        self.executor.add_node(self.node)
+        self.spinning = True
+        self.spin_thread = threading.Thread(target=self._spin, daemon=True)
+        self.spin_thread.start()
         self.root.after(int(1000 / RATE_HZ), self.tick)
+        self.root.after(300, self._grab_focus)
+        # Tk swallows KeyboardInterrupt inside callbacks, so Ctrl-C in the terminal (or a kill from
+        # run/stop.sh) would otherwise leave the window up. Route both to the normal stop-and-quit.
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda *_: self.root.after(0, self.quit))
+
+    def _grab_focus(self):
+        self.root.lift()
+        self.root.attributes('-topmost', True)
+        self.root.focus_force()
+        self.root.after(500, lambda: self.root.attributes('-topmost', False))
 
     def _spin(self):
-        try:
-            rclpy.spin(self.node)
-        except Exception:   # shutdown while spinning
-            pass
+        while self.spinning:
+            try:
+                self.executor.spin_once(timeout_sec=0.1)
+            except Exception:   # context shut down underneath us
+                return
 
     # ---------------- keyboard
     def on_press(self, e):
@@ -180,6 +201,9 @@ class HoldDrive:
         self.status.config(text='\n'.join(lines), fg='#dddddd' if listeners else '#ff9050')
 
     def quit(self):
+        if self.closing:
+            return
+        self.closing = True
         self.release_all()
         for _ in range(5):
             self.pub.publish(Twist())
@@ -194,8 +218,11 @@ class HoldDrive:
             try:
                 self.pub.publish(Twist())
             finally:
+                self.spinning = False
+                self.spin_thread.join(timeout=2.0)
+                self.executor.shutdown()
                 self.node.destroy_node()
-                rclpy.shutdown()
+                rclpy.try_shutdown()
 
 
 def main():

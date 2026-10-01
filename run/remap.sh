@@ -65,7 +65,7 @@ else
   else
     resolve_ports
     [[ -e "$LIDAR_DEV" ]] || { err "Lidar port $LIDAR_DEV not found. Plug in the CP2102 stick (ls /dev/ttyUSB*)."; exit 1; }
-    [[ -e "$ESP32_DEV" ]] || { err "ESP32 port $ESP32_DEV not found. Plug in the ESP32's UART USB-C port."; exit 1; }
+    [[ -e "$ESP32_DEV" ]] || { err "ESP32 port $ESP32_DEV not found. Plug in the ESP32's native USB-C port (303a:1001)."; exit 1; }
     info "lidar $LIDAR_DEV @ $LIDAR_BAUD   ESP32 $ESP32_DEV @ $AGENT_BAUD"
   fi
   start_bg bringup ros2 launch "$PROJECT_DIR/launch/bringup.launch.py" \
@@ -85,12 +85,21 @@ else
     exit 1
   fi
 fi
-if wait_topic "$ODOM_TOPIC" 20; then ok "$ODOM_TOPIC live (ESP32 connected)"
+if wait_topic "$ODOM_TOPIC" 8; then ok "$ODOM_TOPIC live (ESP32 connected)"
+elif (( SIM )); then err "No $ODOM_TOPIC from sim_robot.py: see $LOG_DIR/bringup.log"; exit 1
 else
-  err "No $ODOM_TOPIC after 20 s: the ESP32 hasn't connected to the micro-ROS agent."
-  err "Press the ESP32's RST/EN button (its client only looks for the agent at boot), then re-run."
-  err "Still nothing? Check AGENT_BAUD in config/robot.env against the firmware, and $LOG_DIR/bringup.log."
-  exit 1
+  # Not answering: sitting in the ROM download loader, or tied to an old agent session. A safe
+  # reset (tools/esp32_reset.py) boots its firmware, which then connects to this agent.
+  info "no $ODOM_TOPIC yet: resetting the ESP32"
+  esp32_reset "${ESP32_DEV:-/dev/esp32}" || true
+  if wait_topic "$ODOM_TOPIC" 15; then ok "$ODOM_TOPIC live (ESP32 connected after a reset)"
+  else
+    err "No $ODOM_TOPIC: the ESP32 hasn't connected to the micro-ROS agent."
+    err "Check its cable is in the NATIVE USB-C port (lsusb shows 303a:1001), then run:"
+    err "  run/stop.sh && python3 tools/esp32_reset.py     (prints whether the firmware boots)"
+    err "Agent output: $LOG_DIR/bringup.log"
+    exit 1
+  fi
 fi
 
 # ------------------------------------------------------------------------------------------------

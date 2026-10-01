@@ -9,8 +9,9 @@ SD card turns up the original files, those replace these.
 
 ## Day-one hardware checklist
 
-Do this in order the first time everything is reconnected. Steps 3, 5 and STOP are also desktop icons
-(the "Campus Bot …" launchers; reinstall them with `bash setup/install_launchers.sh`).
+Do this in order the first time everything is reconnected. Hardware check, Map, Drive, Lidar view,
+STOP and Power watch are also desktop icons (the "Campus Bot …" launchers; reinstall them with
+`bash setup/install_launchers.sh`).
 
 1. **Power.** Pack at 22–30 V, never 3 packs in series. Pi on its 5 V buck. Then run
    `run/power_check.sh`: you want ≥ 4.85 V and `throttled=0x0`.
@@ -65,14 +66,32 @@ Do this in order the first time everything is reconnected. Steps 3, 5 and STOP a
 | `python3 tools/calibrate_mask.py` | Measures the column mask and writes `config/scan_mask.yaml`. |
 | `python3 tools/lidar_front.py` | Checks `LASER_YAW`. |
 | `python3 tools/clean_map.py maps/<area>.yaml` | Re-cleans a saved map. |
-| `run/hw_check.sh [--apply]` | First contact: identifies the ports, tests the lidar, auto-detects the ESP32's port, baud and topics, and suggests `robot.env` values. |
+| `run/hw_check.sh [--apply]` | First contact: identifies the ports, tests the lidar, checks the ESP32's micro-ROS link and topics, and suggests `robot.env` values. |
+| `python3 tools/esp32_reset.py` | Safe ESP32 reset that reports whether the firmware or the ROM loader booted. |
 | `python3 tools/lidar_check.py [port]` | Lidar alone, no ROS: info, health, scan rate (works on the Mac too). |
 | `python3 tools/calibrate_odom.py straight\|spin` | Wheel diameter and separation calibration. |
 | `bash setup/install_launchers.sh` | Desktop and app-grid launchers: hardware check, map, STOP, power watch. |
 
 Logs go to `~/.campus_bot/logs/<name>.log` (bringup, slam, nav, rviz, odom_tf, map_saver).
 
+## When the ESP32 doesn't connect
+
+`run/drive.sh`, `run/remap.sh` and `run/hw_check.sh` reset the ESP32 by themselves when it doesn't answer.
+By hand: `run/stop.sh && python3 tools/esp32_reset.py`. It prints the boot mode:
+- `SPI_FAST_FLASH_BOOT` = the firmware is running.
+- `DOWNLOAD` = it's stuck in the ROM loader. Unplug its USB for 3 s, then plug it back in.
+
+Never reset it with a pyserial RTS pulse. On the S3's native USB that can arm download mode (see
+RECOVERY.md, 2026-10-01).
+
 ## Driving keys
+
+**Hold-to-drive window (`run/drive.sh`):** hold ↑ / W forward, ↓ / S back, ← / A and → / D to turn,
+two keys to arc. The robot moves only while a key is held down. Letting go, clicking outside the window,
+SPACE, Esc or Ctrl-C all stop it (ramped at ≤ 0.5 m/s², so ~0.5 s from mapping speed). `+` / `-`
+change the speed.
+
+**In the mapping terminal (`run/remap.sh`):**
 
 Hold `i` / `,` for forward / back, `j` / `l` to turn, and `u o m .` for arcs. Letting go ramps the
 robot to a stop at ≤ 0.5 m/s². `k` or space stops. `+`/`-` change drive speed and `]`/`[` change turn
