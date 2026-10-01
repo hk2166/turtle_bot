@@ -57,8 +57,9 @@ STOP and Power watch are also desktop icons (the "Campus Bot …" launchers; rei
 |---|---|
 | `run/remap.sh <area> [--nav] [--no-rviz] [--yes]` | Power check → sensors → odom TF → pre-flight → SLAM + RViz → keyboard driving. `q` saves `maps/<area>` and `maps/<area>_clean`, a pose graph and a stats report. `--nav` then starts AMCL + Nav2 on the new map. |
 | `run/remap.sh <area> --sim` | The same flow with a fake robot (no hardware), for testing changes. |
-| `run/drive.sh [--speed 0.25]` | **Hold-to-drive** window: the robot moves only while ↑↓←→ / WASD is held; let go (or click away) and it stops at ≤ 0.5 m/s². Starts the ESP32 agent itself. Needs the desktop (monitor or xrdp). |
+| `run/drive.sh [--speed 0.25] [--terminal]` | **Hold-to-drive** window (the terminal driver over plain SSH): the robot moves only while ↑↓←→ / WASD is held; let go (or click away) and it stops at ≤ 0.5 m/s². Starts the ESP32 agent itself. Needs the desktop (monitor or xrdp). |
 | `run/lidar_view.sh [--no-rviz]` | Live lidar: RViz (fixed frame `laser`, no TF needed) plus numbers in the terminal (rate, nearest obstacle, 8 sectors, ASCII top-down map). |
+| `sudo bash setup/05_remote_access.sh` | One-time setup for running without a monitor (see Remote access). |
 | `run/stop.sh` | Sends zero velocity, then stops everything, strays included. |
 | `run/power_check.sh [--brief\|--watch]` | 5 V rail and undervoltage flags. `--watch` during a run shows dips. |
 | `run/camera.sh [on\|off\|status]` | Mast camera. It's off while mapping. |
@@ -73,6 +74,37 @@ STOP and Power watch are also desktop icons (the "Campus Bot …" launchers; rei
 | `bash setup/install_launchers.sh` | Desktop and app-grid launchers: hardware check, map, STOP, power watch. |
 
 Logs go to `~/.campus_bot/logs/<name>.log` (bringup, slam, nav, rviz, odom_tf, map_saver).
+
+## Remote access (robot on WiFi, no monitor)
+
+**Once, in a terminal on the Pi:** `sudo bash setup/05_remote_access.sh`. It's safe to re-run. It:
+- turns WiFi power saving off (it causes lag spikes and dropouts on the Pi);
+- makes the WiFi connect at boot and retry forever;
+- adds SSH keepalives;
+- stops the colour-profile password prompts in remote desktop;
+- opens the firewall, if one is active.
+
+**From the Mac, on the office WiFi:**
+- **Terminal:** `ssh resp@resp-desktop.local`. If `.local` doesn't resolve, use the IP from `hostname -I`;
+  it can change, so a DHCP reservation for the MAC in `/sys/class/net/wlan0/address` helps. Run long jobs
+  inside `tmux new -A -s robot`, so a WiFi drop doesn't end a mapping run.
+- **Screen:** Windows App → Add PC → `resp-desktop.local`, user `resp`. The remote desktop is **black** if
+  `resp` is also logged in on the robot's own monitor. Boot without logging in, or end the monitor
+  session from SSH. This closes everything open on that screen:
+  `loginctl terminate-session $(loginctl list-sessions --no-legend | awk '$4=="seat0"{print $1}')`
+- **Code:** VS Code on the Mac → Remote-SSH → `resp@resp-desktop.local` → open `~/Desktop/campus_bot_fw`.
+- **Driving:**
+  - In remote desktop, `run/drive.sh` opens the hold-to-drive window. It **stops by itself if the link
+    goes silent for 1 s**: otherwise a key held during a WiFi drop would never be released, and
+    the window, which runs on the robot, would keep driving.
+  - Over SSH, `run/drive.sh` uses the terminal driver. It stops 0.6 s after the last key, so a drop
+    stops it too.
+- **WiFi quality:** `iw dev wlan0 link` shows the signal. Before mapping far corners, check it stays
+  above about −70 dBm along the route.
+
+**Security:** SSH and remote desktop accept `resp`'s password from anyone on the office WiFi.
+- Use a strong one: `passwd`.
+- Prefer SSH keys: on the Mac, run `ssh-copy-id resp@resp-desktop.local`.
 
 ## When the ESP32 doesn't connect
 

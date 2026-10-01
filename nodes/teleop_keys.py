@@ -76,6 +76,8 @@ def main():
     ap.add_argument('--max-turn', type=float, default=1.2)
     ap.add_argument('--accel', type=float, default=0.5, help='m/s² (≤ 0.5: tower stability)')
     ap.add_argument('--ang-accel', type=float, default=1.0, help='rad/s²')
+    ap.add_argument('--purpose', choices=['map', 'drive'], default='map',
+                    help="map: q finishes and saves the map (run/remap.sh); drive: q just quits (run/drive.sh)")
     ap.add_argument('--hold', type=float, default=0.6,
                     help='s a key press keeps driving (must cover the keyboard auto-repeat delay)')
     args, ros_args = ap.parse_known_args()
@@ -98,7 +100,8 @@ def main():
     dt = 0.05
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
-    print(HELP)
+    print(HELP if args.purpose == 'map' else
+          HELP.replace('q  stop, FINISH and SAVE the map', 'q  stop and quit                  '))
     try:
         tty.setcbreak(fd)
         last = time.monotonic()

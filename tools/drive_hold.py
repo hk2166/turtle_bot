@@ -22,7 +22,9 @@ Run it through run/drive.sh (that also starts the micro-ROS agent), or alone if 
 """
 import argparse
 import os
+import re
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -46,6 +48,29 @@ RATE_HZ = 20
 # X/XWayland auto-repeat turns one long hold into release+press pairs a few ms apart. A release is
 # only believed if no press of the same key follows within this window.
 REPEAT_FILTER_MS = 40
+# Remote desktop (xrdp): if the WiFi drops while a key is held, the key-up never arrives and this
+# window, which runs ON the robot, would keep driving (the ESP32 watchdog can't help: commands keep
+# coming). So in an xrdp session the link to the remote computer is checked while moving: the RDP
+# connection must show traffic (data or ACKs) within LINK_LOST_MS, or every key counts as released.
+RDP_PORT = int(os.environ.get('CAMPUS_RDP_PORT', '3389'))
+LINK_LOST_MS = 1000
+LINK_CHECK_S = 0.2
+SPINNER = '◐◓◑◒'
+
+
+def rdp_link_age_ms(port=RDP_PORT):
+    """ms since the remote-desktop client last sent data or ACKed ours; None = no RDP connection."""
+    try:
+        out = subprocess.run(['ss', '-tinH', 'state', 'established', f'( sport = :{port} )'],
+                             capture_output=True, text=True, timeout=0.5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    ages = []
+    for conn in re.split(r'\n(?=\S)', out.strip()):       # one entry per connection (info lines indented)
+        rcv, ack = re.search(r'lastrcv:(\d+)', conn), re.search(r'lastack:(\d+)', conn)
+        if rcv or ack:
+            ages.append(min(int(m.group(1)) for m in (rcv, ack) if m))
+    return min(ages) if ages else None
 
 
 def ramp(cur, tgt, step):
@@ -69,6 +94,10 @@ class HoldDrive:
         self.closing = False
         self.close_deadline = 0.0
         self.blocked = set()    # keys still held when SPACE was pressed: ignored until really released
+        self.remote = bool(os.environ.get('XRDP_SESSION'))   # running inside an xrdp remote desktop
+        self.link_lost = False
+        self.next_link_check = 0.0
+        self.spin = 0
 
         rclpy.init()
         self.node = rclpy.create_node('drive_hold')
@@ -167,6 +196,9 @@ class HoldDrive:
         now = time.monotonic()
         dt = min(now - self.last_tick, 0.1)     # real elapsed time, so the ramp is exact at any loop rate
         self.last_tick = now
+        if self.remote and (self.held or self.v or self.w) and now >= self.next_link_check:
+            self.next_link_check = now + LINK_CHECK_S
+            self.check_link()
         lin = sum(KEYS[k][0] for k in self.held)
         ang = sum(KEYS[k][1] for k in self.held)
         tv = self.speed * max(-1, min(1, lin))
@@ -195,12 +227,32 @@ class HoldDrive:
         self.draw(moving)
         self.root.after(int(1000 / RATE_HZ), self.tick)
 
+    def check_link(self):
+        age = rdp_link_age_ms()
+        lost = age is None or age > LINK_LOST_MS
+        if lost and not self.link_lost:
+            # Treat every held key as released (ramped stop) and ignore them until really re-pressed.
+            for job in self.pending_release.values():
+                self.root.after_cancel(job)
+            self.pending_release.clear()
+            self.blocked |= self.held
+            self.held.clear()
+            print(f'remote link lost ({"no RDP connection" if age is None else f"{age} ms silent"}): stopping',
+                  flush=True)
+        self.link_lost = lost
+
     def draw(self, moving):
         listeners = self.pub.get_subscription_count()
-        if self.bumper:
+        if moving:
+            self.spin += 1          # changes every tick while moving: keeps remote-desktop traffic (and ACKs) flowing
+        live = SPINNER[self.spin % len(SPINNER)] if moving else ''
+        if self.link_lost:
+            self.big.config(text='LINK LOST ' + live, fg='#ff5050')
+        elif self.bumper:
             self.big.config(text='BUMPER', fg='#ff5050')
         elif moving:
-            self.big.config(text='DRIVING' if self.held else 'STOPPING', fg='#50e050' if self.held else '#e0c050')
+            self.big.config(text=('DRIVING ' if self.held else 'STOPPING ') + live,
+                            fg='#50e050' if self.held else '#e0c050')
         else:
             self.big.config(text='STOPPED', fg='#cccccc')
         lines = [f'cmd   v {self.v:+.2f} m/s   w {self.w:+.2f} rad/s',
@@ -210,6 +262,8 @@ class HoldDrive:
             p = self.odom.pose.pose.position
             lines.append(f'odom  x {p.x:+.2f}  y {p.y:+.2f}')
         lines.append('ESP32 listening on /cmd_vel' if listeners else '!! nobody subscribed to /cmd_vel (agent down?)')
+        if self.remote:
+            lines.append('remote desktop: stops if the link is silent > 1 s')
         self.status.config(text='\n'.join(lines), fg='#dddddd' if listeners else '#ff9050')
 
     def quit(self):

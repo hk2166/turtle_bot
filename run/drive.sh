@@ -2,6 +2,7 @@
 # Written 2026-10-01: hold-to-drive keyboard control of the real robot.
 #
 #   run/drive.sh [--speed 0.25] [--turn 0.6]
+#   run/drive.sh --terminal            # keyboard in this terminal instead (automatic over plain SSH)
 #
 # Connects to the ESP32 (starts the micro-ROS agent unless run/remap.sh's bring-up already has it,
 # and resets the ESP32 safely if it doesn't answer), then opens the hold-to-drive WINDOW
@@ -12,10 +13,13 @@ set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$PROJECT_DIR"
 
-if [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
-  err "No desktop here (plain SSH?). Run this in a terminal on the Pi's desktop or over xrdp."
-  exit 1
+TERMINAL=0
+ARGS=()
+for a in "$@"; do [[ "$a" == --terminal ]] && TERMINAL=1 || ARGS+=("$a"); done
+if (( ! TERMINAL )) && [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+  TERMINAL=1   # plain SSH: no window possible
 fi
+if (( TERMINAL )) && [[ ! -t 0 ]]; then err "--terminal needs an interactive terminal"; exit 1; fi
 
 STARTED_AGENT=0 LINK_UP=0
 cleanup() {
@@ -76,7 +80,20 @@ ok "ESP32 connected ($ODOM_TOPIC live)"
 LINK_UP=1
 
 say "Driving"
-info "A window called 'Campus Bot: hold to drive' opens now. CLICK IT, then hold the keys THERE"
-info "(keys typed in this terminal do nothing). ↑↓←→ / WASD drive, SPACE stop, Esc quit."
 info "First time: wheels off the ground. Pack 22–30 V."
-python3 tools/drive_hold.py "$@"
+if (( TERMINAL )); then
+  # A terminal (SSH) only ever sees key presses and their auto-repeat, never the release, so this
+  # driver keeps moving only while repeats keep arriving: it stops 0.6 s after the last one. That also
+  # makes it stop by itself when the WiFi drops.
+  info "Terminal driving: hold ↑↓←→ (or i , j l). It stops 0.6 s after you let go. q quits."
+  trap ':' INT   # Ctrl-C goes to the driver, which ramps the robot to a stop
+  python3 nodes/teleop_keys.py --purpose drive --topic "$CMD_VEL_TOPIC" --speed "$MAP_LIN_SPEED" \
+    --turn "$MAP_ANG_SPEED" --max-speed "$MAX_LIN_SPEED" --max-turn "$MAX_ANG_SPEED" \
+    --accel "$MAX_LIN_ACCEL" --ang-accel "$MAX_ANG_ACCEL" || true
+  trap on_int INT
+else
+  info "A window called 'Campus Bot: hold to drive' opens now. CLICK IT, then hold the keys THERE"
+  info "(keys typed in this terminal do nothing). ↑↓←→ / WASD drive, SPACE stop, Esc quit."
+  [[ -n "${XRDP_SESSION:-}" ]] && info "Remote desktop: the robot stops by itself if the link goes silent for 1 s."
+  python3 tools/drive_hold.py "${ARGS[@]}"
+fi

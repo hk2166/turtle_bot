@@ -26,7 +26,8 @@ beats a reconstruction.
   `resp-desktop` (`resp-desktop.local`), office WiFi `Enrich-Labs`.
 - Setup is scripted in `setup/02_setup_pi.sh`. Workspaces: `~/ros2_ws` (sllidar_ros2) and
   `~/microros_ws` (micro-ROS agent).
-- Headless access: xrdp on port 3389, plus SSH. xrdp gives a black screen if `resp` is logged in on the
+- Headless access: xrdp on port 3389, plus SSH. `setup/05_remote_access.sh` (run once with sudo) makes it
+  WiFi-robust (power save off, endless reconnects, SSH keepalives). xrdp gives a black screen if `resp` is logged in on the
   physical monitor at the same time. Log out there first, or reboot and connect without touching the
   monitor.
 - For a new session on the Pi, run `claude` in this folder, or `claude remote-control` to drive it from
