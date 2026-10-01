@@ -57,7 +57,7 @@ STOP and Power watch are also desktop icons (the "Campus Bot …" launchers; rei
 |---|---|
 | `run/remap.sh <area> [--nav] [--no-rviz] [--yes]` | Power check → sensors → odom TF → pre-flight → SLAM + RViz → keyboard driving. `q` saves `maps/<area>` and `maps/<area>_clean`, a pose graph and a stats report. `--nav` then starts AMCL + Nav2 on the new map. |
 | `run/remap.sh <area> --sim` | The same flow with a fake robot (no hardware), for testing changes. |
-| `run/drive.sh [--speed 0.25] [--terminal]` | **Hold-to-drive** window (the terminal driver over plain SSH): the robot moves only while ↑↓←→ / WASD is held; let go (or click away) and it stops at ≤ 0.5 m/s². Starts the ESP32 agent itself. Needs the desktop (monitor or xrdp). |
+| `run/drive.sh [--speed 0.25] [--terminal]` | **Hold-to-drive** window (the terminal driver over plain SSH): the robot moves only while ↑↓←→ / WASD is held; let go (or click away) and it stops at ≤ 0.5 m/s². Starts the ESP32 agent itself. In remote desktop it stops if the link goes silent for 1 s; over plain SSH it uses the terminal driver. |
 | `run/lidar_view.sh [--no-rviz]` | Live lidar: RViz (fixed frame `laser`, no TF needed) plus numbers in the terminal (rate, nearest obstacle, 8 sectors, ASCII top-down map). |
 | `sudo bash setup/05_remote_access.sh` | One-time setup for running without a monitor (see Remote access). |
 | `run/stop.sh` | Sends zero velocity, then stops everything, strays included. |
