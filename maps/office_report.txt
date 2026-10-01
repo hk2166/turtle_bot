@@ -1,0 +1,8 @@
+Map office  (401×487 cells at 0.05 m = 20.1 × 24.4 m)
+  mapped extent      19.9 × 23.4 m
+  free floor         167.6 m²
+  occupied cells     6864
+  specks removed     313  (≤ 3 cells, not near unknown)
+  holes filled       654  (≤ 25 cells, enclosed)
+  NOTE: statistics only. The original grading metric has not been recovered.
+  Check by eye: walls single and straight, glass room reads as a wall, loop closed with no doubling.
