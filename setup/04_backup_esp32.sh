@@ -18,8 +18,11 @@ info() { printf '    %s\n' "$*"; }
 die()  { printf '\033[1;31m[fail] %s\033[0m\n' "$*"; exit 1; }
 trap 'die "line $LINENO: \"$BASH_COMMAND\" failed."' ERR
 
-ESPTOOL="$(command -v esptool || command -v esptool.py || true)"
-[[ -n "$ESPTOOL" ]] || die "esptool not found. Run 02_setup_pi.sh first, or: sudo apt install esptool"
+# Ubuntu 24.04's apt esptool (4.7) ships without the ESP32-S3 stub flasher and dies with
+# "stub_flasher_32s3.json not found", so prefer the pip copy in ~/.venvs/esptool.
+ESPTOOL="${ESPTOOL:-}"
+[[ -z "$ESPTOOL" && -x "$HOME/.venvs/esptool/bin/esptool" ]] && ESPTOOL="$HOME/.venvs/esptool/bin/esptool"
+[[ -n "$ESPTOOL" ]] || die "esptool not found. Run: python3 -m venv ~/.venvs/esptool && ~/.venvs/esptool/bin/pip install esptool"
 
 PORT="${1:-}"
 if [[ -z "$PORT" ]]; then

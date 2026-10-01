@@ -145,6 +145,33 @@ It publishes the masked scan that slam_toolbox consumes.
   (map saved, and a Nav2 goal reached), but has **not** run on the robot. Hardware bring-up steps are
   in `README.md`. Recovered originals still replace these files.
 - **Not reconstructed:** ESP32 firmware, face stack, `calibrate.py`, `lidar_check.py`.
+- **2026-10-01, first day on the hardware:**
+  - **Lidar** (CP2102 stick → `/dev/lidar` = ttyUSB0): it survived the 25.6 V incident. Model 0x41, fw 1.02,
+    hw 18, health good, sllidar_ros2 scans at 9.97 Hz. `tools/lidar_check.py` was rebuilt.
+  - **ESP32 flash backed up** to `~/recovered/esp32-20261001-113417/` (16 MB plus sha256, never commit).
+    The apt esptool 4.7 can't read an S3 (its stub file is missing), so `04_backup_esp32.sh` now uses
+    `~/.venvs/esptool` (pip esptool 5.4).
+  - **The original firmware is alive.** It talks micro-ROS on the **native USB port** (`/dev/esp32` =
+    ttyACM0, 303a:1001) at 115200, and the agent session comes up first try. Node `campus_bot_base`:
+    `/odom` (Odometry, `odom`→`base_link`, 20 Hz), `/imu/data_raw` (Imu, `imu_link`, 20 Hz, real gyro:
+    σ 0.0007 rad/s, gravity 9.84), `/bumper_tripped` (Bool, False: loop closed), `/parcel/weight_g`
+    (Float32, no messages, so the HX711 is absent or unwired), and it subscribes `/cmd_vel` (Twist).
+    It does **not** broadcast the odom TF (`odom_to_tf.py` covers that). `config/robot.env` needed no
+    changes.
+  - **What the dump proves about the firmware source:** PlatformIO + arduino-esp32 2.x (IDF v4.4.7),
+    board `adafruit_feather_esp32s3`, FastAccelStepper (`stepperConnectToPin`), raw-register MPU6050
+    and a bit-banged HX711 (no library strings), log on UART0 with these messages: `[campus_bot] boot / waiting
+    for agent / agent connected / agent lost - stopping / publishes failing - reconnecting / alive heap=…`,
+    `[drive] ready: %.1f steps/m, acc %u steps/s^2`, `[imu] ok, gyro bias …`, `[hx711] ok, tare offset …`,
+    `[bumper] %s`. Partitions: default 8 MB (app0/app1 3.2 MB, spiffs, coredump).
+  - **Reconstructed** `firmware/campus_bot_base/` from that spec. The first build was still running when
+    this was written (see the commit log for the result). It has **not been flashed**:
+    the chip still runs the original. Pin numbers for the bumper, IMU and HX711 and the numeric constants
+    are guesses marked VERIFY. Read the real ones from the old firmware's UART0 boot log before flashing.
+  - **Reconstructed** `face/` (enrolment service, store, verify, calibrate.py). The 3 old enrolments are gone
+    with the card, so people must re-enrol.
+  - **Camera:** the Brio 100 enumerates (UVC, MJPG). All four Pi USB ports were in use, so it was
+    swapped out for the ESP32 during the check.
 
 ## Plan
 1. Recover: steps 1–5 above.

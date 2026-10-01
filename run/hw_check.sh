@@ -169,8 +169,10 @@ PY
     pick() { grep -F "[$1]" <<<"$TOPICS" | head -1 | cut -d' ' -f1; }
     odom="$(pick nav_msgs/msg/Odometry)"; imu="$(pick sensor_msgs/msg/Imu)"
     cmd="$(pick geometry_msgs/msg/Twist)"; cmds="$(pick geometry_msgs/msg/TwistStamped)"
-    [[ -n "$odom" ]] && { ok "odometry: $odom"; [[ "$odom" != "$ODOM_TOPIC" ]] && SUGGEST[ODOM_TOPIC]="$odom"; } || warn "no Odometry topic"
-    [[ -n "$imu" ]] && { ok "IMU: $imu"; [[ "$imu" != "$IMU_TOPIC" ]] && SUGGEST[IMU_TOPIC]="$imu"; } || warn "no Imu topic (heading may be fused inside the firmware only)"
+    if [[ -n "$odom" ]]; then ok "odometry: $odom"; [[ "$odom" != "$ODOM_TOPIC" ]] && SUGGEST[ODOM_TOPIC]="$odom"
+    else warn "no Odometry topic"; fi
+    if [[ -n "$imu" ]]; then ok "IMU: $imu"; [[ "$imu" != "$IMU_TOPIC" ]] && SUGGEST[IMU_TOPIC]="$imu"
+    else warn "no Imu topic (heading may be fused inside the firmware only)"; fi
     if [[ -n "$cmd" ]]; then ok "velocity commands: $cmd (Twist)"; [[ "$cmd" != "$CMD_VEL_TOPIC" ]] && SUGGEST[CMD_VEL_TOPIC]="$cmd"
     elif [[ -n "$cmds" ]]; then
       err "velocity commands are TwistStamped on $cmds: teleop_keys.py sends Twist. Tell Claude to switch it."

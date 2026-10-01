@@ -10,7 +10,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 say "Stopping Campus Bot"
 # 1. Anything that commands the motors goes first, so nothing overrides the zero command.
-pkill -INT -f 'teleop_keys.py' 2>/dev/null || true
+pkill -INT -f 'teleop_keys.py|drive_hold.py' 2>/dev/null || true
 stop_bg nav
 # 2. Zero velocity while the agent is still up to carry it to the ESP32.
 if is_running bringup || pgrep -f micro_ros_agent >/dev/null || pgrep -f sim_robot.py >/dev/null; then
@@ -18,9 +18,9 @@ if is_running bringup || pgrep -f micro_ros_agent >/dev/null || pgrep -f sim_rob
     && ok "zero velocity sent on $CMD_VEL_TOPIC" || warn "couldn't send zero velocity (the 300 ms watchdog stops the motors anyway)"
 fi
 # 3. Everything we started.
-for name in slam rviz camera odom_tf bringup; do stop_bg "$name"; done
+for name in slam rviz rviz_lidar camera odom_tf lidar agent bringup; do stop_bg "$name"; done
 # 4. Strays by name.
-PATTERNS=(teleop_keys.py async_slam_toolbox_node rviz2 v4l2_camera_node odom_to_tf.py
+PATTERNS=(teleop_keys.py drive_hold.py scan_monitor.py async_slam_toolbox_node rviz2 v4l2_camera_node odom_to_tf.py
           static_transform_publisher scan_filter.py sim_robot.py micro_ros_agent sllidar_node
           map_saver_cli nav2_ component_container lifecycle_manager opennav_docking
           'ros2 launch .*campus_bot_fw' 'ros2 launch nav2_bringup')

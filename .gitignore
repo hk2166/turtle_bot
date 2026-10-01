@@ -12,3 +12,6 @@ __pycache__/
 faces/
 recovered/
 *.bin
+
+# PlatformIO build output
+.pio/
