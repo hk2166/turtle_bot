@@ -4,6 +4,9 @@
 
     (bring-up running: run/remap.sh, or the sensors it leaves up)
     python3 tools/check_motion.py            then drive with run/drive.sh in another terminal:
+    python3 tools/check_motion.py --tf       same, but against the odom → base_link TF instead of the
+                                             raw /odom topic: this is what SLAM/AMCL see, so with the
+                                             calibration scales in odom_to_tf.py both ratios must be ~1.
                                              ~1 m forward, ~1 m back, a slow 90° turn left, one right.
                                              Ctrl-C (or --seconds) ends the recording.
 
@@ -30,6 +33,9 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 from scipy.spatial import cKDTree
 from sensor_msgs.msg import LaserScan
+from rclpy.duration import Duration
+from rclpy.time import Time as RclTime
+from tf2_ros import Buffer, TransformListener
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'nodes'))
 from campus_common import load_env  # noqa: E402
@@ -169,6 +175,7 @@ def main():
     ap.add_argument('--odom', default=env.get('ODOM_TOPIC', '/odom'))
     ap.add_argument('--seconds', type=float, default=90.0)
     ap.add_argument('--min-range', type=float, default=0.45, help='ignore returns closer than this (the columns)')
+    ap.add_argument('--tf', action='store_true', help='measure the odom → base_link TF instead of /odom')
     a = ap.parse_args()
     # Ctrl-C or SIGTERM (run/check_motion.sh) ends the recording and goes on to the analysis.
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
@@ -185,7 +192,11 @@ def main():
         q = m.pose.pose.orientation
         odo.append((m.header.stamp.sec + m.header.stamp.nanosec * 1e-9, m.pose.pose.position.x,
                     m.pose.pose.position.y, math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))))
-    node.create_subscription(Odometry, a.odom, on_odom, 20)
+    if a.tf:
+        buf = Buffer()
+        TransformListener(buf, node, spin_thread=True)
+    else:
+        node.create_subscription(Odometry, a.odom, on_odom, 20)
     print(f'Recording {a.scan} + {a.odom} for up to {a.seconds:.0f} s. Drive now (run/drive.sh): ~1 m forward,')
     print('back, then a slow 90° turn each way. Ctrl-C when done.')
     end = time.monotonic() + a.seconds
@@ -193,6 +204,15 @@ def main():
     try:
         while time.monotonic() < end:
             rclpy.spin_once(node, timeout_sec=0.1)
+            if a.tf:
+                try:
+                    tr = buf.lookup_transform('odom', 'base_link', RclTime(), timeout=Duration(seconds=0))
+                    q = tr.transform.rotation
+                    st = tr.header.stamp
+                    odo.append((st.sec + st.nanosec * 1e-9, tr.transform.translation.x, tr.transform.translation.y,
+                                math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))))
+                except Exception:
+                    pass
             if sys.stdout.isatty() and time.monotonic() - shown > 0.5:
                 shown = time.monotonic()
                 sys.stdout.write(f'\r  {len(scans)} scans, {len(odo)} odometry messages ')
@@ -204,7 +224,9 @@ def main():
     print()
     if len(scans) < 20 or len(odo) < 20:
         sys.exit('not enough data: is the bring-up running (lidar on /scan, ESP32 on /odom)?')
-    hist = np.array(sorted(odo))
+    hist = np.array(sorted(set(odo)))
+    src = 'odom→base_link TF (calibrated)' if a.tf else f'{a.odom} (raw firmware)'
+    print(f'measuring: {src}')
     moved = math.hypot(hist[-1, 1] - hist[0, 1], hist[-1, 2] - hist[0, 2])
     turned = np.abs(np.diff(np.unwrap(hist[:, 3]))).sum()
     print(f'odometry: {moved:.2f} m net, {math.degrees(turned):.0f}° turned in total')

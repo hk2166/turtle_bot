@@ -29,7 +29,7 @@ else
 fi
 
 OUT="$LOG_DIR/check_motion.txt"
-python3 tools/check_motion.py --seconds 900 >"$OUT" 2>&1 &
+python3 tools/check_motion.py --seconds 900 ${CHECK_TF:+--tf} >"$OUT" 2>&1 &
 REC=$!
 cleanup() {
   kill -TERM "$REC" 2>/dev/null || true
