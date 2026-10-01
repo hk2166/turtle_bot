@@ -22,6 +22,7 @@ Every run is appended to ~/.campus_bot/logs/calibrate_odom.csv.
 import argparse
 import csv
 import math
+import re
 import os
 import select
 import signal
@@ -174,6 +175,12 @@ class Cal:
             if not s:
                 return default
             try:
+                # "9ft10", "9ft", "9'10": feet (and inches) instead of metres
+                m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(?:ft|')\s*(\d+(?:\.\d+)?)?\s*(?:in|\")?", s)
+                if m:
+                    v = float(m.group(1)) * 0.3048 + (float(m.group(2)) if m.group(2) else 0.0) * 0.0254
+                    print(f'  = {v:.3f} m')
+                    return v
                 return float(s)
             except ValueError:
                 print('  a number, please (for example 4.97)')
@@ -199,7 +206,7 @@ def straight(cal, args):
     if cal.truth and tx0:
         tx, ty, _ = cal.pose(cal.truth)
         default = math.hypot(tx - tx0[0], ty - tx0[1])
-    real = cal.ask_float('  Measured distance with a tape (m)?', default)
+    real = cal.ask_float('  Measured distance (metres, or feet like 9ft10)?', default)
     scale = real / odom_d if odom_d > 0.05 and real > 0 else float('nan')
     if scale != scale:
         print('  ! too little distance (odometry or measured) to compute a factor: nothing to apply')
