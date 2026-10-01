@@ -23,13 +23,13 @@ have_pkg() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok
 
 log "Packages"
 missing=()
-for p in openssh-server xrdp xorgxrdp avahi-daemon iw xfce4 xfce4-terminal dbus-x11; do have_pkg "$p" || missing+=("$p"); done
+for p in openssh-server xrdp xorgxrdp avahi-daemon iw xfce4 xfce4-terminal dbus-x11 x11vnc; do have_pkg "$p" || missing+=("$p"); done
 if ((${#missing[@]})); then
   info "installing: ${missing[*]}"
   DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}" \
     || { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"; }
 fi
-ok "openssh-server, xrdp, xorgxrdp, avahi-daemon, iw, xfce4 (remote-desktop desktop)"
+ok "openssh-server, xrdp, xorgxrdp, avahi-daemon, iw, xfce4 (remote-desktop desktop), x11vnc"
 
 log "SSH (port 22)"
 systemctl enable --now ssh.socket >/dev/null 2>&1 || systemctl enable --now ssh
@@ -67,6 +67,17 @@ install -m 0644 -o "$U" -g "$U" "$(dirname "$0")/im-launch-xfce.desktop" "/home/
 ok "remote desktop sessions use XFCE (~$U/.xsession, no ibus); the monitor keeps GNOME"
 systemctl is-active --quiet xrdp && ok "xrdp running" || warn "xrdp isn't running: journalctl -u xrdp"
 
+log "Monitor screen mirror (VNC, port 5900)"
+# Shares the REAL monitor desktop (unlike xrdp's separate XFCE one). Needs the monitor login to be
+# "Ubuntu on Xorg" (gear icon on the GDM password screen): x11vnc cannot capture the default Wayland
+# session, and GNOME 46's own sharing (RDP) stalls with the Mac "Windows App" client (seen 2026-10-01).
+install -d -o "$U" -g "$U" "/home/$U/.local/bin"
+install -m 0755 -o "$U" -g "$U" "$(dirname "$0")/x11vnc-session" "/home/$U/.local/bin/x11vnc-session"
+install -m 0644 -o "$U" -g "$U" "$(dirname "$0")/x11vnc.desktop" "/home/$U/.config/autostart/x11vnc.desktop"
+if [[ -f "/home/$U/.vnc/passwd" ]]; then ok "starts with every 'Ubuntu on Xorg' monitor login"
+else warn "no VNC password yet: as $U, run  x11vnc -storepasswd"; fi
+info "connect from the Mac: Finder ⌘K → vnc://$(hostname).local"
+
 log "WiFi"
 CONN="$(nmcli -t -f NAME,TYPE connection show --active | awk -F: '$2=="802-11-wireless"{print $1; exit}')"
 DEV="$(nmcli -t -f DEVICE,TYPE device | awk -F: '$2=="wifi"{print $1; exit}')"
@@ -95,7 +106,8 @@ fi
 
 log "Firewall"
 if ufw status 2>/dev/null | grep -q 'Status: active'; then
-  ufw allow 22/tcp >/dev/null; ufw allow 3389/tcp >/dev/null; ok "ufw: 22 and 3389 open"
+  ufw allow 22/tcp >/dev/null; ufw allow 3389/tcp >/dev/null; ufw allow 5900/tcp >/dev/null
+  ok "ufw: 22 (SSH), 3389 (xrdp) and 5900 (VNC) open"
 else
   info "ufw not active: nothing to open"
 fi

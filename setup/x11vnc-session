@@ -1,0 +1,13 @@
+#!/bin/sh
+# campus_bot (setup/05_remote_access.sh): share the monitor's real GNOME desktop over VNC (port 5900).
+# Autostarted by ~/.config/autostart/x11vnc.desktop in every graphical login; runs only in the
+# monitor's Xorg session. GNOME's default Wayland session can't be captured: log in with
+# "Ubuntu on Xorg" (gear icon on the GDM password screen; GDM remembers the choice).
+# Not run in xrdp XFCE sessions ($XRDP_SESSION), which have their own desktop on port 3389.
+[ "${XDG_SESSION_TYPE:-}" = "x11" ] || exit 0
+[ -z "${XRDP_SESSION:-}" ] || exit 0
+[ -f "$HOME/.vnc/passwd" ] || exit 0           # set one first: x11vnc -storepasswd
+exec x11vnc -display "${DISPLAY:-:0}" ${XAUTHORITY:+-auth "$XAUTHORITY"} \
+  -usepw -shared -forever -loop -repeat -nap \
+  -desktop "campus-bot ($(hostname))" -rfbport 5900 \
+  -o "$HOME/.vnc/x11vnc.log"

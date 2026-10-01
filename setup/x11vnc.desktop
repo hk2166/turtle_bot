@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Screen sharing (x11vnc)
+Comment=campus_bot: share the monitor desktop over VNC when logged in with "Ubuntu on Xorg"
+Exec=/home/resp/.local/bin/x11vnc-session
+NotShowIn=XFCE;
+X-GNOME-Autostart-enabled=true

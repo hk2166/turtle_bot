@@ -91,11 +91,13 @@ Logs go to `~/.campus_bot/logs/<name>.log` (bringup, slam, nav, rviz, odom_tf, m
 - **Screen:** Windows App → Add PC → `resp-desktop.local`, user `resp`. The remote desktop is its own
   **XFCE** desktop, separate from the GNOME one on the robot's monitor. A second GNOME for the same user
   crashes both ("Oh no! Something has gone wrong").
-- **The robot's own GNOME screen (mirrored):** GNOME Desktop Sharing on **port 3390**. In Windows App,
-  use PC name `resp-desktop.local:3390`. Set its login once, in a terminal on the Pi:
-  `grdctl rdp set-credentials resp '<a password>'`. It only works while someone is logged in to GNOME on
-  the monitor. With no monitor attached, GNOME needs an HDMI dummy plug to have a screen to share. To
-  turn it off: `grdctl rdp disable`.
+- **The robot's own GNOME screen (mirrored):** VNC on **port 5900** (x11vnc). On the robot's monitor,
+  log in with **"Ubuntu on Xorg"** (gear icon on the GDM password screen; GDM remembers the choice —
+  x11vnc can't capture the default Wayland session). Set the VNC password once: `x11vnc -storepasswd`.
+  From the Mac: Finder → ⌘K → `vnc://resp-desktop.local`. It only works while someone is logged in on
+  the monitor; with no monitor attached, an HDMI dummy plug is needed.
+  (GNOME's built-in Desktop Sharing, RDP on port 3390, authenticates but then stalls with the Mac
+  "Windows App" client — seen on 11.4.0, 2026-10-01 — so it is disabled: `grdctl rdp disable`.)
 - **Code:** VS Code on the Mac → Remote-SSH → `resp@resp-desktop.local` → open `~/Desktop/campus_bot_fw`.
 - **Driving:**
   - In remote desktop, `run/drive.sh` opens the hold-to-drive window. It **stops by itself if the link
