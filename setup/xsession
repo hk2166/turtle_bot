@@ -2,6 +2,9 @@
 # campus_bot: the desktop for xrdp remote-desktop logins (only xrdp uses this file; the monitor login
 # goes through GDM). A second GNOME for a user already logged in on the monitor makes both crash
 # ("Oh no! Something has gone wrong"), so remote sessions get XFCE, which runs alongside GNOME.
+# Plain X input in remote sessions: no ibus, so no "ibus should be started" warnings. Typing works
+# through the xrdp keyboard anyway, and the monitor's GNOME keeps its own ibus.
+export GTK_IM_MODULE=xim QT_IM_MODULE=xim XMODIFIERS=@im=none IM_CONFIG_PHASE=2
 if command -v startxfce4 >/dev/null 2>&1; then
   export XDG_CURRENT_DESKTOP=XFCE XDG_SESSION_DESKTOP=xfce
   exec startxfce4

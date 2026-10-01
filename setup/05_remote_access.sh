@@ -60,7 +60,10 @@ EOF
 # ("Oh no! Something has gone wrong", seen 2026-10-01). ~/.xsession is read only by xrdp logins.
 install -m 0755 -o "$U" -g "$U" "$(dirname "$0")/xsession" "/home/$U/.xsession"
 sed -i '/# >>> campus_bot xrdp >>>/,/# <<< campus_bot xrdp <<</d' "/home/$U/.xsessionrc" 2>/dev/null || true
-ok "remote desktop sessions use XFCE (~$U/.xsession); the monitor keeps GNOME"
+install -d -o "$U" -g "$U" "/home/$U/.config/autostart"
+# Ubuntu's im-launch autostart would warn "ibus should be started" in the XFCE session: skip it there only.
+install -m 0644 -o "$U" -g "$U" "$(dirname "$0")/im-launch-xfce.desktop" "/home/$U/.config/autostart/im-launch.desktop"
+ok "remote desktop sessions use XFCE (~$U/.xsession, no ibus); the monitor keeps GNOME"
 systemctl is-active --quiet xrdp && ok "xrdp running" || warn "xrdp isn't running: journalctl -u xrdp"
 
 log "WiFi"
