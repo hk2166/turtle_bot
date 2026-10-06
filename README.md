@@ -109,6 +109,12 @@ Logs go to `~/.campus_bot/logs/<name>.log` (bringup, slam, nav, rviz, odom_tf, m
   extended desktop (no top bar); a login script mirrors it onto the main screen as a fallback.
   (GNOME's built-in Desktop Sharing, RDP on port 3390, authenticates but then stalls with the Mac
   "Windows App" client — seen on 11.4.0, 2026-10-01 — so it is disabled: `grdctl rdp disable`.)
+- **Fast screen share (RustDesk, smoother than VNC):** once, on the robot:
+  `sudo apt install ~/Downloads/rustdesk-1.5.0-aarch64.deb && sudo ufw allow 21115:21119/tcp && sudo ufw allow 21116/udp`,
+  then set its password: `rustdesk --password '<a password>'`. On the Mac: RustDesk from
+  github.com/rustdesk/rustdesk/releases (the `aarch64.dmg` for Apple-Silicon, `x86_64.dmg` for Intel).
+  In the Mac app connect to the ROBOT'S IP (direct IP access; `hostname -I` on the robot). LAN-only:
+  `direct-server` in `~/.config/rustdesk/RustDesk2.toml` — no accounts, no cloud relay.
 - **Robot dashboard on the Mac (Foxglove, better than RViz-over-VNC):** once, on the robot:
   `sudo apt install ros-jazzy-foxglove-bridge && sudo ufw allow 8765/tcp`. The bridge then starts with
   every `run/remap.sh` / `run/nav.sh`. On the Mac: install the free Foxglove app (foxglove.dev/download),
