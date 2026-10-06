@@ -34,11 +34,19 @@ button:hover{background:var(--fg);color:#04140a;text-shadow:none}
 #stop{border-color:var(--bad);color:var(--bad)}#stop:hover{background:var(--bad);color:#140404}
 button.tab{padding:3px 8px;font-size:10px;border-color:var(--line);color:var(--dim)}
 button.tab.on{border-color:var(--fg);color:var(--fg)}
+button.vtab{font-size:12px;padding:5px 12px;margin-left:10px;vertical-align:middle}
+#pad{display:grid;grid-template-columns:repeat(3,76px);gap:8px;justify-content:center;margin:14px 0}
+.padb{font-size:22px;padding:16px 0;touch-action:none;user-select:none}
+#padstop{border-color:var(--bad);color:var(--bad)}
+#spd{accent-color:#49f07a;flex:1}
 #log{flex:1;min-height:0;overflow-y:auto;font-size:11px;color:var(--dim);white-space:pre-wrap;margin-top:6px}
 .ok{color:var(--fg)}.bad{color:var(--bad)}
 small{color:var(--dim);font-size:11px}
 </style></head><body>
-<h1>▚ CAMPUS BOT // MISSION CONTROL <span class="blink">▮</span></h1>
+<h1>▚ CAMPUS BOT <span class="blink">▮</span>
+ <button class="tab vtab on" onclick="setView('mission',this)">MISSION CONTROL</button>
+ <button class="tab vtab" onclick="setView('manual',this)">MANUAL DRIVE</button>
+</h1>
 <div id="bar">
  <span><b>NAV</b><span id="nav">…</span></span>
  <span><b>POSE</b><span id="pose">…</span></span>
@@ -46,7 +54,7 @@ small{color:var(--dim);font-size:11px}
  <span><b>WIFI</b><span id="wifi">…</span></span>
  <span><b>TEMP</b><span id="temp">…</span></span>
 </div>
-<div class="grid">
+<div class="grid" id="view-mission">
  <div class="panel">
   <h2>TACTICAL MAP — click: goal · shift-click then click: robot is HERE → faces THERE</h2>
   <div id="mapwrap"><canvas id="map"></canvas></div>
@@ -75,7 +83,56 @@ small{color:var(--dim);font-size:11px}
   <div id="log"></div>
  </div>
 </div>
+<div class="grid" id="view-manual" style="display:none">
+ <div class="panel">
+  <h2>EYES — drive by sight</h2>
+  <div id="camwrap2" style="flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#000;border:1px solid var(--line)">
+   <img id="cam2" style="max-width:100%;max-height:100%" alt="">
+  </div>
+ </div>
+ <div class="panel">
+  <h2>DRIVE PAD — HOLD to move (buttons or WASD/arrows) · release = stop</h2>
+  <div id="pad">
+   <span></span><button class="padb" data-k="f">▲</button><span></span>
+   <button class="padb" data-k="l">◀</button><button class="padb" id="padstop">■</button><button class="padb" data-k="r">▶</button>
+   <span></span><button class="padb" data-k="b">▼</button><span></span>
+  </div>
+  <div class="row"><span style="color:var(--dim)">SPEED</span>
+   <input id="spd" type="range" min="0.10" max="0.35" step="0.05" value="0.20">
+   <span id="spdv">0.20 m/s</span></div>
+  <div class="row"><small>safety: commands stream only while held — release, tab switch or WiFi loss
+   stops the robot within 0.3 s (motor watchdog). Entering this tab cancels any map goal.</small></div>
+ </div>
+</div>
 <script>
+let view='mission';
+async function setView(v,btn){view=v;
+ document.getElementById('view-mission').style.display=v=='mission'?'grid':'none';
+ document.getElementById('view-manual').style.display=v=='manual'?'grid':'none';
+ document.querySelectorAll('.vtab').forEach(b=>b.classList.remove('on'));
+ if(btn)btn.classList.add('on');
+ if(v=='manual'){await post('/api/stop',{});log('manual drive: goals cancelled')}
+ else{held={f:0,b:0,l:0,r:0}}}
+let held={f:0,b:0,l:0,r:0};
+const KEYMAP={ArrowUp:'f',w:'f',ArrowDown:'b',s:'b',ArrowLeft:'l',a:'l',ArrowRight:'r',d:'r'};
+document.addEventListener('keydown',e=>{const k=KEYMAP[e.key];
+ if(view=='manual'&&k){held[k]=1;e.preventDefault()}});
+document.addEventListener('keyup',e=>{const k=KEYMAP[e.key];if(k)held[k]=0});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)held={f:0,b:0,l:0,r:0}});
+window.addEventListener('blur',()=>held={f:0,b:0,l:0,r:0});
+setInterval(()=>{if(view!='manual'||document.hidden)return;
+ const sp=parseFloat(document.getElementById('spd').value);
+ document.getElementById('spdv').textContent=sp.toFixed(2)+' m/s';
+ post('/api/drive',{vx:(held.f-held.b)*sp, wz:(held.l-held.r)*0.7});},130);
+document.addEventListener('pointerup',()=>{if(!document.querySelector('.padb:active'))held={f:0,b:0,l:0,r:0}});
+window.addEventListener('load',()=>{
+ document.querySelectorAll('.padb[data-k]').forEach(b=>{
+  const k=b.dataset.k;
+  b.addEventListener('pointerdown',e=>{held[k]=1;b.setPointerCapture(e.pointerId)});
+  ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>b.addEventListener(ev,()=>held[k]=0));
+ });
+ document.getElementById('padstop').addEventListener('pointerdown',()=>{held={f:0,b:0,l:0,r:0};post('/api/stop',{})});
+});
 const cv=document.getElementById('map'),cx=cv.getContext('2d');
 const img=new Image(); img.src='/map.png';
 let M=null,S={},poseClick=null,feedOn=true;
@@ -110,7 +167,7 @@ async function post(u,b){return fetch(u,{method:'POST',body:JSON.stringify(b)})}
 function feed(on){feedOn=on;document.getElementById('camoff').style.display=on?'none':'';
  if(!on)document.getElementById('cam').src=''}
 async function pollCam(){
- if(feedOn){const c=document.getElementById('cam');
+ if(feedOn){const c=document.getElementById(view=='manual'?'cam2':'cam');
   try{const r=await fetch('/frame.jpg?'+Date.now());
    if(r.ok){const b=await r.blob();const u=URL.createObjectURL(b);
     c.onload=()=>URL.revokeObjectURL(u);c.src=u;document.getElementById('camoff').style.display='none'}

@@ -258,7 +258,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get('Content-Length', 0))
         body = json.loads(self.rfile.read(n) or b'{}')
-        if self.path == '/api/goal':
+        if self.path == '/api/drive':
+            # manual teleop: one Twist per POST. The browser streams while a control is held; when the
+            # stream stops (release, hidden tab, WiFi drop) the firmware's 300 ms watchdog halts the robot.
+            vx = max(-0.35, min(0.35, float(body.get('vx', 0.0))))
+            wz = max(-0.9, min(0.9, float(body.get('wz', 0.0))))
+            t = Twist()
+            t.linear.x, t.angular.z = vx, wz
+            self.ros.pub_stop.publish(t)
+            self.send(200, 'application/json', b'{"ok":true}')
+        elif self.path == '/api/goal':
             p = self.ros.pose()
             yaw = body.get('yaw')
             if yaw is None:
