@@ -68,6 +68,7 @@ STOP and Power watch are also desktop icons (the "Campus Bot …" launchers; rei
 | `run/stop.sh` | Sends zero velocity, then stops everything, strays included. |
 | `run/power_check.sh [--brief\|--watch]` | 5 V rail and undervoltage flags. `--watch` during a run shows dips. |
 | `run/camera.sh [on\|off\|status]` | Mast camera node: AprilTag detections on `/tags`, 2 Hz preview on `/camera/image/compressed`. remap.sh starts it. |
+| `python3 tools/look.py [out.jpg]` | One frame through the camera (for terminal-driven missions and quick checks). |
 | `python3 tools/make_tags.py 0-7` / `--checkerboard` | Printable AprilTags / camera calibration board (PDF on the Desktop). |
 | `python3 tools/calibrate_camera.py` | Camera intrinsics from the checkerboard → `config/camera_intrinsics.yaml`. |
 | `python3 tools/camera_pose.py --wall D H [--write]` | Measures where the camera sits and points → `CAMERA_*` in `robot.env`. |
