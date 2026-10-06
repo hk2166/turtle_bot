@@ -240,6 +240,11 @@ if (( NAV )); then
     # shellcheck disable=SC2086
     python3 tools/pose_tool.py set $POSE && ok "initial pose = where mapping ended ($POSE)"
   fi
+  if [[ "${AUTO_CLEAR:-1}" == 1 ]]; then
+    stop_bg auto >/dev/null
+    start_bg auto python3 nodes/auto_clear.py
+    ok "idle behaviour on: boxed in + idle ~1 min → moves itself to open floor (AUTO_CLEAR=0 disables)"
+  fi
   if (( CAM_UP )) && [[ -f "${MAP}_tags.yaml" ]]; then
     stop_bg tags >/dev/null
     start_bg tags python3 nodes/tag_map.py --ros-args -p mode:=localize -p tags_file:="${MAP}_tags.yaml" \
