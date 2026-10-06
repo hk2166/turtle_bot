@@ -32,6 +32,8 @@ button{background:#0f1d0f;border:1px solid var(--fg);color:var(--fg);font:inheri
   letter-spacing:2px;padding:6px 12px;border-radius:4px;cursor:pointer}
 button:hover{background:var(--fg);color:#04140a;text-shadow:none}
 #stop{border-color:var(--bad);color:var(--bad)}#stop:hover{background:var(--bad);color:#140404}
+button.tab{padding:3px 8px;font-size:10px;border-color:var(--line);color:var(--dim)}
+button.tab.on{border-color:var(--fg);color:var(--fg)}
 #log{flex:1;min-height:0;overflow-y:auto;font-size:11px;color:var(--dim);white-space:pre-wrap;margin-top:6px}
 .ok{color:var(--fg)}.bad{color:var(--bad)}
 small{color:var(--dim);font-size:11px}
@@ -62,7 +64,13 @@ small{color:var(--dim);font-size:11px}
    <button onclick="feed(true)">▶ FEED</button>
    <button onclick="feed(false)">▢ OFF</button>
   </div>
-  <h2 style="margin-top:8px">EVENT LOG</h2>
+  <div class="row" style="margin-top:8px">
+   <span style="color:var(--dim);font-size:11px;letter-spacing:2px">LOG:</span>
+   <button class="tab on" onclick="setTab('events',this)">EVENTS</button>
+   <button class="tab" onclick="setTab('nav',this)">NAV</button>
+   <button class="tab" onclick="setTab('bringup',this)">SENSORS</button>
+   <button class="tab" onclick="setTab('auto',this)">AUTO</button>
+  </div>
   <div id="log"></div>
  </div>
 </div>
@@ -107,8 +115,18 @@ async function pollCam(){
     c.onload=()=>URL.revokeObjectURL(u);c.src=u;document.getElementById('camoff').style.display='none'}
    else document.getElementById('camoff').textContent=await r.text()}catch(e){}}
  setTimeout(pollCam,feedOn?220:1000)}
-function log(s){const d=document.getElementById('log');
- d.textContent=`[${new Date().toTimeString().slice(0,8)}] ${s}\n`+d.textContent.slice(0,4000)}
+let events='';let tab='events';
+function setTab(t,btn){tab=t;document.querySelectorAll('.tab').forEach(b=>b.classList.remove('on'));
+ if(btn)btn.classList.add('on');renderLog(events)}
+function renderLog(t){const d=document.getElementById('log');
+ const atEnd=d.scrollTop+d.clientHeight>=d.scrollHeight-20;
+ d.textContent=t;if(tab!='events'&&atEnd)d.scrollTop=d.scrollHeight}
+function log(s){events=`[${new Date().toTimeString().slice(0,8)}] ${s}\n`+events.slice(0,4000);
+ if(tab=='events')renderLog(events)}
+async function pollLogs(){
+ if(tab!='events'){try{const r=await fetch('/api/logs?f='+tab);renderLog(await r.text())}catch(e){}}
+ setTimeout(pollLogs,2000)}
+pollLogs();
 let lastNav='';
 setInterval(async()=>{try{
  const s=await(await fetch('/api/state')).json();S=s;M=s.map;

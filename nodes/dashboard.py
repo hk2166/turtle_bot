@@ -13,6 +13,7 @@ import json
 import math
 import os
 import subprocess
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,6 +31,10 @@ from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG_DIR = os.path.expanduser('~/.campus_bot/logs')
+LOGS = {n: os.path.join(LOG_DIR, n + '.log') for n in
+        ('nav', 'bringup', 'auto', 'tags', 'slam', 'agent', 'dashboard')}
+ANSI = re.compile(r'\x1b\[[0-9;]*m')
 PORT = int(os.environ.get('DASH_PORT', '8088'))
 AREA = os.environ.get('DASH_MAP', 'office')
 NAV_STATE = {GoalStatus.STATUS_ACCEPTED: 'GOAL ACCEPTED', GoalStatus.STATUS_EXECUTING: 'DRIVING',
@@ -222,6 +227,25 @@ class Handler(BaseHTTPRequestHandler):
                  'fit': self.state.fit_msg, 'map': {'res': res, 'ox': o[0], 'oy': o[1],
                                                     'h': MAP_SHAPE[0], 'w': MAP_SHAPE[1]}, **s}
             self.send(200, 'application/json', json.dumps(d).encode())
+        elif self.path.startswith('/api/logs'):
+            name = (self.path.split('f=')[1].split('&')[0] if 'f=' in self.path else 'nav')
+            f = LOGS.get(name)
+            lines = []
+            if f and os.path.exists(f):
+                with open(f, 'rb') as fh:
+                    fh.seek(max(0, os.path.getsize(f) - 40000))
+                    text = fh.read().decode('utf-8', 'replace')
+                for ln in text.splitlines()[-45:]:
+                    ln = ANSI.sub('', ln)
+                    # drop the noisy prefix: [component]... [stamp] [node]: message → node: message
+                    ln2 = re.sub(r'^\[[a-zA-Z_0-9-]+-\d+\] ', '', ln)
+                    m = re.match(r'^\[(INFO|WARN|ERROR|DEBUG)\] \[([0-9.]+)\] \[([^]]*)\]: (.*)$', ln2)
+                    if m:
+                        t = time.strftime('%H:%M:%S', time.localtime(float(m.group(2))))
+                        lines.append(f'{t} {m.group(1)[0]} {m.group(3).split(".")[-1]}: {m.group(4)}'[:150])
+                    else:
+                        lines.append(ln2[:150])
+            self.send(200, 'text/plain; charset=utf-8', '\n'.join(lines).encode())
         elif self.path.startswith('/frame.jpg'):
             jpg, err = self.cam.get()
             if jpg:
