@@ -97,37 +97,50 @@ class Ros(Node):
 
 
 class Camera:
-    """Owns /dev/video0 only while at least one browser is streaming."""
+    """Grabs frames only while a browser polled /frame.jpg in the last few seconds
+    (snapshot polling renders in every browser, unlike MJPEG streams in Safari)."""
     def __init__(self):
         self.lock = threading.Lock()
-        self.cap = None
-        self.users = 0
+        self.jpg = None
+        self.err = b''
+        self.last_req = 0.0
+        self.running = False
 
-    def frames(self):
-        with self.lock:
-            if self.cap is None:
-                import sys
-                sys.path.insert(0, os.path.join(PROJECT, 'nodes'))
-                import tags_common as tc
-                self.cap = tc.open_camera()
-            self.users += 1
+    def _loop(self):
+        import sys
+        sys.path.insert(0, os.path.join(PROJECT, 'nodes'))
+        import tags_common as tc
+        cap = tc.open_camera()
+        if cap is None:
+            with self.lock:
+                self.err = b'camera busy or unplugged'
+                self.running = False
+            return
         try:
-            while self.cap is not None:
-                with self.lock:
-                    ok, img = self.cap.read() if self.cap else (False, None)
+            while time.time() - self.last_req < 5.0:
+                ok, img = cap.read()
                 if not ok:
                     break
                 img = cv2.resize(img, (640, 360), interpolation=cv2.INTER_AREA)
                 ok, jpg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 if ok:
-                    yield jpg.tobytes()
-                time.sleep(0.15)       # ~6 fps: enough for driving, cheap for the Pi
+                    with self.lock:
+                        self.jpg = jpg.tobytes()
+                time.sleep(0.12)
         finally:
+            cap.release()
             with self.lock:
-                self.users -= 1
-                if self.users <= 0 and self.cap is not None:
-                    self.cap.release()
-                    self.cap = None
+                self.running = False
+                self.jpg = None
+
+    def get(self):
+        with self.lock:
+            self.last_req = time.time()
+            if not self.running:
+                self.running = True
+                self.err = b''
+                threading.Thread(target=self._loop, daemon=True).start()
+            return self.jpg, self.err
 
 
 class State:
@@ -209,16 +222,12 @@ class Handler(BaseHTTPRequestHandler):
                  'fit': self.state.fit_msg, 'map': {'res': res, 'ox': o[0], 'oy': o[1],
                                                     'h': MAP_SHAPE[0], 'w': MAP_SHAPE[1]}, **s}
             self.send(200, 'application/json', json.dumps(d).encode())
-        elif self.path == '/camera':
-            self.send_response(200)
-            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=f')
-            self.end_headers()
-            try:
-                for jpg in self.cam.frames():
-                    self.wfile.write(b'--f\r\nContent-Type: image/jpeg\r\nContent-Length: ' +
-                                     str(len(jpg)).encode() + b'\r\n\r\n' + jpg + b'\r\n')
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+        elif self.path.startswith('/frame.jpg'):
+            jpg, err = self.cam.get()
+            if jpg:
+                self.send(200, 'image/jpeg', jpg)
+            else:
+                self.send(503, 'text/plain', err or b'warming up')
         else:
             self.send(404, 'text/plain', b'not here')
 
