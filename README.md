@@ -55,6 +55,7 @@ STOP and Power watch are also desktop icons (the "Campus Bot …" launchers; rei
 
 | Command | What it does |
 |---|---|
+| `run/bot.sh` | **The one-stop menu**: every control below as a numbered choice, with live status (power, WiFi, what's running, saved maps, pose). |
 | `run/remap.sh <area> [--nav] [--no-camera] [--no-rviz] [--yes]` | Power check → sensors → odom TF → pre-flight → camera → SLAM + RViz → keyboard driving. `q` saves `maps/<area>` and `maps/<area>_clean`, a pose graph, a stats report and `maps/<area>_tags.yaml` (the AprilTags the camera saw). `--nav` then starts AMCL + Nav2 on the new map, with camera localization. |
 | `run/nav.sh <area>` | AMCL + Nav2 on a map saved earlier, no re-mapping. Waits for the robot's pose (RViz "2D Pose Estimate", `run/reset_pose.sh`, or a tag pair) before the planner starts. Over SSH, RViz opens on the robot's own screen (monitor / VNC). |
 | `python3 tools/goto.py --forward 1.0` / `--turn 90` / `X Y [YAW]` / `--back` | Sends a Nav2 goal and shows progress; checks the target is open floor first. Ctrl-C cancels and stops. |
