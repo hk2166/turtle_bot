@@ -272,13 +272,36 @@ class Handler(BaseHTTPRequestHandler):
             self.ros.send_pose(body['x'], body['y'], body.get('yaw', 0.0))
             self.send(200, 'application/json', b'{"ok":true}')
         elif self.path == '/api/fit':
+            mode = body.get('mode', 'start')
+            pose_now = self.ros.pose()
+
             def run():
                 self.state.fit_msg = 'fitting scan to map ...'
-                r = subprocess.run(['bash', os.path.join(PROJECT, 'run', 'reset_pose.sh')] +
-                                   (['--wide'] if body.get('wide') else []),
-                                   capture_output=True, text=True)
-                lines = [ln.strip() for ln in (r.stdout + r.stderr).splitlines() if 'fit' in ln or '✗' in ln]
-                self.state.fit_msg = (lines[-1] if lines else 'fit finished')[:120]
+                if mode == 'here':
+                    if pose_now is None:
+                        self.state.fit_msg = 'no current pose: use RESET POSE or FIT WIDE'
+                        return
+                    x, y, yaw = pose_now
+                    r = subprocess.run(['python3', os.path.join(PROJECT, 'tools', 'fit_pose.py'),
+                                        f'{x:.3f}', f'{y:.3f}', f'{math.degrees(yaw):.1f}',
+                                        '--radius', '1.0', '--angle', '30'],
+                                       capture_output=True, text=True)
+                    try:
+                        fx, fy, fyaw, score = (float(v) for v in r.stdout.split())
+                    except ValueError:
+                        self.state.fit_msg = ('fit failed: ' + (r.stdout + r.stderr).strip())[:120]
+                        return
+                    if score < 0.5:
+                        self.state.fit_msg = f'no confident fit near here ({score:.0%}): pose left unchanged'
+                        return
+                    self.ros.send_pose(fx, fy, fyaw)
+                    self.state.fit_msg = f'pose refreshed: {fx:.2f}, {fy:.2f} @ {math.degrees(fyaw):.0f}° ({score:.0%} on walls)'
+                else:
+                    r = subprocess.run(['bash', os.path.join(PROJECT, 'run', 'reset_pose.sh')] +
+                                       (['--wide'] if mode == 'wide' else []),
+                                       capture_output=True, text=True)
+                    lines = [ln.strip() for ln in (r.stdout + r.stderr).splitlines() if 'fit' in ln or '✗' in ln]
+                    self.state.fit_msg = (lines[-1] if lines else 'fit finished')[:120]
             threading.Thread(target=run, daemon=True).start()
             self.send(200, 'application/json', b'{"ok":true}')
         else:

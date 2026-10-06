@@ -52,8 +52,9 @@ small{color:var(--dim);font-size:11px}
   <div id="mapwrap"><canvas id="map"></canvas></div>
   <div class="row">
    <button id="stop">■ STOP</button>
-   <button onclick="fit(false)">⌖ FIT POSE</button>
-   <button onclick="fit(true)">⌖ FIT WIDE</button>
+   <button onclick="fit('here')" title="re-fit the scan around where the robot believes it is">⟳ REFRESH POSE</button>
+   <button onclick="fit('start')" title="robot is near the mapping start">⌖ RESET POSE</button>
+   <button onclick="fit('wide')" title="robot could be anywhere within a few metres of the start">⌖ FIT WIDE</button>
    <small id="fit"></small>
   </div>
  </div>
@@ -104,7 +105,7 @@ cv.onclick=async e=>{
   poseClick=null;return}
  await post('/api/goal',{x,y});log(`goal → ${x.toFixed(2)}, ${y.toFixed(2)}`)}
 document.getElementById('stop').onclick=async()=>{await post('/api/stop',{});log('STOP sent')};
-async function fit(wide){await post('/api/fit',{wide});log('scan-to-map fit started'+(wide?' (wide)':''))}
+async function fit(mode){await post('/api/fit',{mode});log('pose fit started ('+mode+')')}
 async function post(u,b){return fetch(u,{method:'POST',body:JSON.stringify(b)})}
 function feed(on){feedOn=on;document.getElementById('camoff').style.display=on?'none':'';
  if(!on)document.getElementById('cam').src=''}
