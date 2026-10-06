@@ -2,7 +2,7 @@
 #   base_footprint → base_link · scans from /scan_filtered (columns masked) · AMCL range 12 m (C1)
 #   footprint 0.44 × 0.38 m · velocity smoother 0.4 m/s, accel ≤ 0.5 m/s² (tower stability)
 #   controller: Regulated Pure Pursuit instead of MPPI (lighter on the Pi 5)
-# Raise desired_linear_vel / max_velocity toward 0.8 m/s only after the first autonomy tests.
+# Tuned 2026-10-06 after the first clean runs: 0.55 m/s cruise. Hard limits stay: accel ≤ 0.5 m/s².
 amcl:
   ros__parameters:
     alpha1: 0.2
@@ -101,21 +101,21 @@ controller_server:
       yaw_goal_tolerance: 0.25
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.4            # top speed is ~0.8 m/s; start conservative
+      desired_linear_vel: 0.55           # top ~0.8 m/s; raised from 0.4 after the first clean runs (2026-10-06)
       lookahead_dist: 0.6
       min_lookahead_dist: 0.3
       max_lookahead_dist: 0.9
       lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 0.6
+      rotate_to_heading_angular_vel: 0.8
       transform_tolerance: 0.2
-      use_velocity_scaled_lookahead_dist: false
+      use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 0.6
+      approach_velocity_scaling_dist: 0.5
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: false
-      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_radius: 0.7
       regulated_linear_scaling_min_speed: 0.1
       use_fixed_curvature_lookahead: false
       curvature_lookahead_dist: 0.6
@@ -143,7 +143,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.70
+        inflation_radius: 0.60
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -203,7 +203,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.7
+        inflation_radius: 0.6
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.
@@ -307,7 +307,7 @@ velocity_smoother:
     stamp_smoothed_velocity_with_smoothing_time: False
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.4, 0.0, 1.0]
+    max_velocity: [0.55, 0.0, 1.0]
     min_velocity: [-0.2, 0.0, -1.0]
     max_accel: [0.5, 0.0, 1.0]
     max_decel: [-0.5, 0.0, -1.0]
