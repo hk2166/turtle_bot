@@ -55,6 +55,7 @@ STOP and Power watch are also desktop icons (the "Campus Bot …" launchers; rei
 
 | Command | What it does |
 |---|---|
+| `run/dashboard.sh [on\|off]` | **Web mission control** at `http://resp-desktop.local:8088`: live map (click = goal, shift-click = set pose), camera feed, status, STOP. No password: anyone on the office WiFi can drive the robot while it's on. Firewall once: `sudo ufw allow 8088/tcp`. |
 | `run/bot.sh` | **The one-stop menu**: every control below as a numbered choice, with live status (power, WiFi, what's running, saved maps, pose). |
 | `run/remap.sh <area> [--nav] [--no-camera] [--no-rviz] [--yes]` | Power check → sensors → odom TF → pre-flight → camera → SLAM + RViz → keyboard driving. `q` saves `maps/<area>` and `maps/<area>_clean`, a pose graph, a stats report and `maps/<area>_tags.yaml` (the AprilTags the camera saw). `--nav` then starts AMCL + Nav2 on the new map, with camera localization. |
 | `run/nav.sh <area>` | AMCL + Nav2 on a map saved earlier, no re-mapping. Waits for the robot's pose (RViz "2D Pose Estimate", `run/reset_pose.sh`, or a tag pair) before the planner starts. Over SSH, RViz opens on the robot's own screen (monitor / VNC). |

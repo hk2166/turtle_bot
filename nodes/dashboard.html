@@ -1,0 +1,110 @@
+<!doctype html>
+<!-- Written 2026-10-06: served by nodes/dashboard.py at http://<robot>:8088 -->
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAMPUS BOT // MISSION CONTROL</title>
+<style>
+:root{--bg:#060a06;--panel:#0a120a;--line:#1d3a1d;--fg:#49f07a;--dim:#2c7a46;--warn:#ffb347;--bad:#ff5566}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font:14px/1.5 "SF Mono","Fira Code",ui-monospace,Menlo,monospace;
+     padding:14px;min-height:100vh}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(0deg,transparent 0 2px,rgba(0,0,0,.14) 2px 4px)}
+h1{font-size:17px;letter-spacing:3px;color:var(--fg);text-shadow:0 0 12px #39d56888;margin-bottom:10px}
+h1 .blink{animation:bl 1.2s steps(2) infinite}@keyframes bl{to{opacity:0}}
+.grid{display:grid;grid-template-columns:1.4fr 1fr;gap:12px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px;
+  box-shadow:0 0 18px #02140288 inset}
+.panel h2{font-size:12px;color:var(--dim);letter-spacing:2px;border-bottom:1px dashed var(--line);
+  padding-bottom:6px;margin-bottom:8px}
+#bar{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:12px;padding:8px 12px;background:var(--panel);
+  border:1px solid var(--line);border-radius:6px}
+#bar b{color:var(--dim);font-weight:400;margin-right:6px}
+#mapwrap{position:relative;width:100%}
+#map{width:100%;image-rendering:pixelated;border:1px solid var(--line);cursor:crosshair;display:block}
+#cam{width:100%;border:1px solid var(--line);background:#000;min-height:180px}
+button{background:#0f1d0f;border:1px solid var(--fg);color:var(--fg);font:inherit;letter-spacing:2px;
+  padding:9px 16px;border-radius:4px;cursor:pointer;margin:4px 6px 0 0}
+button:hover{background:var(--fg);color:#04140a;text-shadow:none}
+#stop{border-color:var(--bad);color:var(--bad)}#stop:hover{background:var(--bad);color:#140404}
+#log{height:110px;overflow-y:auto;font-size:12px;color:var(--dim);white-space:pre-wrap}
+.ok{color:var(--fg)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+small{color:var(--dim)}
+</style></head><body>
+<h1>▚ CAMPUS BOT // MISSION CONTROL <span class="blink">▮</span></h1>
+<div id="bar">
+ <span><b>NAV</b><span id="nav">…</span></span>
+ <span><b>POSE</b><span id="pose">…</span></span>
+ <span><b>PWR</b><span id="power">…</span></span>
+ <span><b>WIFI</b><span id="wifi">…</span></span>
+ <span><b>TEMP</b><span id="temp">…</span></span>
+</div>
+<div class="grid">
+ <div class="panel">
+  <h2>TACTICAL MAP — click: send goal · shift-click: "robot is HERE" (then click again for facing)</h2>
+  <div id="mapwrap"><canvas id="map"></canvas></div>
+  <button id="stop">■ STOP</button>
+  <button onclick="fit(false)">⌖ FIT POSE</button>
+  <button onclick="fit(true)">⌖ FIT POSE (WIDE)</button>
+  <small id="fit"></small>
+ </div>
+ <div class="panel">
+  <h2>EYES — live feed (uses robot CPU while open)</h2>
+  <img id="cam" alt="camera feed">
+  <button onclick="camOn()">▶ FEED ON</button><button onclick="camOff()">▢ FEED OFF</button>
+  <h2 style="margin-top:12px">EVENT LOG</h2>
+  <div id="log"></div>
+ </div>
+</div>
+<script>
+const cv=document.getElementById('map'),cx=cv.getContext('2d');
+const img=new Image(); img.src='/map.png';
+let M=null,S={},poseClick=null;
+img.onload=()=>{cv.width=img.width;cv.height=img.height;draw()};
+function w2p(x,y){return[(x-M.ox)/M.res,(M.h-1-(y-M.oy)/M.res)]}
+function p2w(px,py){const r=cv.getBoundingClientRect();
+  const mx=px/r.width*cv.width, my=py/r.height*cv.height;
+  return[M.ox+mx*M.res, M.oy+(M.h-1-my)*M.res]}
+function draw(){
+ cx.drawImage(img,0,0);
+ if(!M)return;
+ if(S.plan&&S.plan.length>1){cx.strokeStyle='#49f07a';cx.lineWidth=1.5;cx.beginPath();
+  S.plan.forEach((p,i)=>{const[a,b]=w2p(p[0],p[1]);i?cx.lineTo(a,b):cx.moveTo(a,b)});cx.stroke()}
+ if(S.goal){const[a,b]=w2p(S.goal[0],S.goal[1]);cx.strokeStyle='#ffb347';cx.lineWidth=2;
+  cx.beginPath();cx.arc(a,b,6,0,7);cx.moveTo(a-9,b);cx.lineTo(a+9,b);cx.moveTo(a,b-9);cx.lineTo(a,b+9);cx.stroke()}
+ if(S.pose){const[a,b]=w2p(S.pose[0],S.pose[1]),t=-S.pose[2];
+  cx.save();cx.translate(a,b);cx.rotate(t);cx.fillStyle='#8cff9e';cx.shadowColor='#49f07a';cx.shadowBlur=10;
+  cx.beginPath();cx.moveTo(9,0);cx.lineTo(-6,5);cx.lineTo(-6,-5);cx.closePath();cx.fill();cx.restore()}
+ if(poseClick){const[a,b]=w2p(poseClick[0],poseClick[1]);cx.strokeStyle='#ffb347';
+  cx.strokeRect(a-5,b-5,10,10)}
+}
+cv.onclick=async e=>{
+ if(!M)return;
+ const r=cv.getBoundingClientRect();const[x,y]=p2w(e.clientX-r.left,e.clientY-r.top);
+ if(e.shiftKey){poseClick=[x,y];log(`pose: now click where the robot FACES`);return}
+ if(poseClick){const yaw=Math.atan2(y-poseClick[1],x-poseClick[0]);
+  await post('/api/pose',{x:poseClick[0],y:poseClick[1],yaw});
+  log(`pose set ${poseClick[0].toFixed(2)}, ${poseClick[1].toFixed(2)} @ ${(yaw*57.3).toFixed(0)}°`);
+  poseClick=null;return}
+ await post('/api/goal',{x,y});log(`goal → ${x.toFixed(2)}, ${y.toFixed(2)}`)}
+document.getElementById('stop').onclick=async()=>{await post('/api/stop',{});log('STOP sent')};
+async function fit(wide){await post('/api/fit',{wide});log('scan-to-map fit started'+(wide?' (wide)':''))}
+async function post(u,b){return fetch(u,{method:'POST',body:JSON.stringify(b)})}
+function camOn(){document.getElementById('cam').src='/camera?'+Date.now()}
+function camOff(){document.getElementById('cam').src=''}
+function log(s){const d=document.getElementById('log');
+ d.textContent=`[${new Date().toTimeString().slice(0,8)}] ${s}\n`+d.textContent.slice(0,4000)}
+let lastNav='';
+setInterval(async()=>{try{
+ const s=await(await fetch('/api/state')).json();S=s;M=s.map;
+ const el=(i,v)=>document.getElementById(i).textContent=v;
+ el('nav',s.nav);el('power',s.power);el('wifi',s.wifi);el('temp',s.temp);
+ el('pose',s.pose?`${s.pose[0].toFixed(2)}, ${s.pose[1].toFixed(2)} @ ${(s.pose[2]*57.3).toFixed(0)}°`:'unknown');
+ document.getElementById('nav').className=s.nav.includes('DOWN')||s.nav.includes('FAIL')?'bad':
+   s.nav=='DRIVING'?'ok':'';
+ document.getElementById('fit').textContent=s.fit||'';
+ if(s.nav!=lastNav){log('nav: '+s.nav);lastNav=s.nav}
+ draw();
+}catch(e){document.getElementById('nav').textContent='PANEL OFFLINE?'}},700);
+</script></body></html>

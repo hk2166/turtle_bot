@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+# Written 2026-10-06: the web mission-control panel.
+"""Campus Bot dashboard: a web panel served from the robot (http://<robot>:8088).
+
+    run/dashboard.sh                    start/stop it (any browser on the office WiFi)
+
+Shows the live map with the robot, its plan and goals (click the map to send the robot there),
+the camera feed, power/WiFi/temperature/navigation status, and a STOP button.
+Navigation itself must be running (run/nav.sh); the panel only talks to it.
+The camera is opened only while someone is actually watching the feed, and released after.
+"""
+import json
+import math
+import os
+import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import cv2
+import numpy as np
+import rclpy
+import yaml
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+from nav_msgs.msg import Path
+from action_msgs.msg import GoalStatus, GoalStatusArray
+from rclpy.duration import Duration
+from rclpy.node import Node
+from rclpy.time import Time
+from tf2_ros import Buffer, TransformListener
+
+PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PORT = int(os.environ.get('DASH_PORT', '8088'))
+AREA = os.environ.get('DASH_MAP', 'office')
+NAV_STATE = {GoalStatus.STATUS_ACCEPTED: 'GOAL ACCEPTED', GoalStatus.STATUS_EXECUTING: 'DRIVING',
+             GoalStatus.STATUS_CANCELING: 'CANCELING', GoalStatus.STATUS_SUCCEEDED: 'GOAL REACHED',
+             GoalStatus.STATUS_CANCELED: 'GOAL CANCELED', GoalStatus.STATUS_ABORTED: 'GOAL FAILED'}
+
+
+class Ros(Node):
+    def __init__(self):
+        super().__init__('dashboard')
+        self.tf = Buffer()
+        self.tf_listener = TransformListener(self.tf, None, spin_thread=True)
+        self.pub_goal = self.create_publisher(PoseStamped, '/goal_pose', 10)
+        self.pub_init = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
+        self.pub_stop = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.plan = []
+        self.nav_state = 'IDLE'
+        self.goal = None
+        self.create_subscription(Path, '/plan', self.on_plan, 10)
+        self.create_subscription(GoalStatusArray, '/navigate_to_pose/_action/status', self.on_status, 10)
+
+    def on_plan(self, msg):
+        self.plan = [(p.pose.position.x, p.pose.position.y) for p in msg.poses[::3]]
+
+    def on_status(self, msg):
+        if msg.status_list:
+            self.nav_state = NAV_STATE.get(msg.status_list[-1].status, 'IDLE')
+
+    def pose(self):
+        try:
+            t = self.tf.lookup_transform('map', 'base_link', Time(), timeout=Duration(seconds=0.1))
+            q = t.transform.rotation
+            return (t.transform.translation.x, t.transform.translation.y,
+                    math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+        except Exception:
+            return None
+
+    def send_goal(self, x, y, yaw):
+        m = PoseStamped()
+        m.header.frame_id = 'map'
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.pose.position.x, m.pose.position.y = float(x), float(y)
+        m.pose.orientation.z, m.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
+        self.pub_goal.publish(m)
+        self.goal = (x, y)
+
+    def send_pose(self, x, y, yaw):
+        m = PoseWithCovarianceStamped()
+        m.header.frame_id = 'map'
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.pose.pose.position.x, m.pose.pose.position.y = float(x), float(y)
+        m.pose.pose.orientation.z, m.pose.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
+        m.pose.covariance[0] = m.pose.covariance[7] = 0.25 ** 2
+        m.pose.covariance[35] = math.radians(15) ** 2
+        self.pub_init.publish(m)
+
+    def stop(self):
+        p = self.pose()
+        if p:
+            self.send_goal(p[0], p[1], p[2])   # "come to where you are" preempts the current goal
+        for _ in range(5):
+            self.pub_stop.publish(Twist())
+            time.sleep(0.05)
+        self.goal = None
+
+
+class Camera:
+    """Owns /dev/video0 only while at least one browser is streaming."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.cap = None
+        self.users = 0
+
+    def frames(self):
+        with self.lock:
+            if self.cap is None:
+                import sys
+                sys.path.insert(0, os.path.join(PROJECT, 'nodes'))
+                import tags_common as tc
+                self.cap = tc.open_camera()
+            self.users += 1
+        try:
+            while self.cap is not None:
+                with self.lock:
+                    ok, img = self.cap.read() if self.cap else (False, None)
+                if not ok:
+                    break
+                img = cv2.resize(img, (640, 360), interpolation=cv2.INTER_AREA)
+                ok, jpg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                if ok:
+                    yield jpg.tobytes()
+                time.sleep(0.15)       # ~6 fps: enough for driving, cheap for the Pi
+        finally:
+            with self.lock:
+                self.users -= 1
+                if self.users <= 0 and self.cap is not None:
+                    self.cap.release()
+                    self.cap = None
+
+
+class State:
+    """Cached slow readings (power, wifi, temperature, what's running)."""
+    def __init__(self):
+        self.cache = {}
+        self.t = 0.0
+        self.lock = threading.Lock()
+        self.fit_msg = ''
+
+    def slow(self):
+        with self.lock:
+            if time.time() - self.t < 5:
+                return self.cache
+            out = {}
+            try:
+                p = subprocess.run(['bash', os.path.join(PROJECT, 'run', 'power_check.sh'), '--brief'],
+                                   capture_output=True, text=True, timeout=5)
+                out['power'] = p.stdout.strip()[:60] or 'n/a'
+            except Exception:
+                out['power'] = 'n/a'
+            try:
+                w = subprocess.run(['iw', 'dev', 'wlan0', 'link'], capture_output=True, text=True, timeout=3).stdout
+                out['wifi'] = next((ln.split()[1] + ' dBm' for ln in w.splitlines() if 'signal' in ln), 'n/a')
+            except Exception:
+                out['wifi'] = 'n/a'
+            try:
+                t = subprocess.run(['vcgencmd', 'measure_temp'], capture_output=True, text=True, timeout=3).stdout
+                out['temp'] = t.strip().replace('temp=', '')
+            except Exception:
+                out['temp'] = 'n/a'
+            out['nav_up'] = subprocess.run(['pgrep', '-f', 'component_container_isolated'],
+                                           capture_output=True).returncode == 0
+            self.cache, self.t = out, time.time()
+            return out
+
+
+def load_map():
+    meta = yaml.safe_load(open(os.path.join(PROJECT, 'maps', f'{AREA}_clean.yaml')))
+    img = cv2.imread(os.path.join(PROJECT, 'maps', f'{AREA}_clean.pgm'), -1)
+    v = np.full((*img.shape, 3), 14, np.uint8)
+    v[img == 254] = (24, 34, 24)        # free floor: very dark green-grey
+    v[img == 205] = (14, 16, 14)        # unknown: near black
+    v[img == 0] = (120, 255, 120)       # walls: phosphor green (BGR)
+    ok, png = cv2.imencode('.png', v)
+    return png.tobytes(), meta, img.shape
+
+
+MAP_PNG, MAP_META, MAP_SHAPE = load_map()
+PAGE = open(os.path.join(PROJECT, 'nodes', 'dashboard.html'), 'rb').read()
+
+
+class Handler(BaseHTTPRequestHandler):
+    ros = None
+    cam = None
+    state = None
+
+    def log_message(self, *a):
+        pass
+
+    def send(self, code, ctype, body):
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path in ('/', '/index.html'):
+            self.send(200, 'text/html; charset=utf-8', PAGE)
+        elif self.path == '/map.png':
+            self.send(200, 'image/png', MAP_PNG)
+        elif self.path == '/api/state':
+            s = self.state.slow()
+            res = MAP_META['resolution']
+            o = MAP_META['origin']
+            d = {'pose': self.ros.pose(), 'plan': self.ros.plan, 'goal': self.ros.goal,
+                 'nav': self.ros.nav_state if s['nav_up'] else 'NAV DOWN (run/nav.sh office)',
+                 'fit': self.state.fit_msg, 'map': {'res': res, 'ox': o[0], 'oy': o[1],
+                                                    'h': MAP_SHAPE[0], 'w': MAP_SHAPE[1]}, **s}
+            self.send(200, 'application/json', json.dumps(d).encode())
+        elif self.path == '/camera':
+            self.send_response(200)
+            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=f')
+            self.end_headers()
+            try:
+                for jpg in self.cam.frames():
+                    self.wfile.write(b'--f\r\nContent-Type: image/jpeg\r\nContent-Length: ' +
+                                     str(len(jpg)).encode() + b'\r\n\r\n' + jpg + b'\r\n')
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        else:
+            self.send(404, 'text/plain', b'not here')
+
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0))
+        body = json.loads(self.rfile.read(n) or b'{}')
+        if self.path == '/api/goal':
+            p = self.ros.pose()
+            yaw = body.get('yaw')
+            if yaw is None:
+                yaw = math.atan2(body['y'] - p[1], body['x'] - p[0]) if p else 0.0
+            self.ros.send_goal(body['x'], body['y'], yaw)
+            self.send(200, 'application/json', b'{"ok":true}')
+        elif self.path == '/api/stop':
+            self.ros.stop()
+            self.send(200, 'application/json', b'{"ok":true}')
+        elif self.path == '/api/pose':
+            self.ros.send_pose(body['x'], body['y'], body.get('yaw', 0.0))
+            self.send(200, 'application/json', b'{"ok":true}')
+        elif self.path == '/api/fit':
+            def run():
+                self.state.fit_msg = 'fitting scan to map ...'
+                r = subprocess.run(['bash', os.path.join(PROJECT, 'run', 'reset_pose.sh')] +
+                                   (['--wide'] if body.get('wide') else []),
+                                   capture_output=True, text=True)
+                lines = [ln.strip() for ln in (r.stdout + r.stderr).splitlines() if 'fit' in ln or '✗' in ln]
+                self.state.fit_msg = (lines[-1] if lines else 'fit finished')[:120]
+            threading.Thread(target=run, daemon=True).start()
+            self.send(200, 'application/json', b'{"ok":true}')
+        else:
+            self.send(404, 'text/plain', b'not here')
+
+
+def main():
+    rclpy.init()
+    ros = Ros()
+    threading.Thread(target=lambda: rclpy.spin(ros), daemon=True).start()
+    Handler.ros = ros
+    Handler.cam = Camera()
+    Handler.state = State()
+    srv = ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
+    print(f'dashboard on http://0.0.0.0:{PORT}  (map: {AREA})', flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == '__main__':
+    main()

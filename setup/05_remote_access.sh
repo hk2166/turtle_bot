@@ -109,8 +109,11 @@ fi
 log "Firewall"
 if ufw status 2>/dev/null | grep -q 'Status: active'; then
   ufw allow 22/tcp >/dev/null; ufw allow 3389/tcp >/dev/null; ufw allow 5900/tcp >/dev/null
-  ufw allow 8765/tcp >/dev/null
-  ok "ufw: 22 (SSH), 3389 (xrdp), 5900 (VNC) and 8765 (Foxglove) open"
+  ufw allow 8765/tcp >/dev/null; ufw allow 8088/tcp >/dev/null
+  ok "ufw: 22 (SSH), 3389 (xrdp), 5900 (VNC), 8765 (Foxglove) and 8088 (dashboard) open"
+install -d -o "$U" -g "$U" "/home/$U/.config/wireplumber/wireplumber.conf.d"
+install -m 0644 -o "$U" -g "$U" "$(dirname "$0")/wireplumber-no-camera.conf" \
+  "/home/$U/.config/wireplumber/wireplumber.conf.d/99-campus-bot-no-camera.conf"
 else
   info "ufw not active: nothing to open"
 fi
