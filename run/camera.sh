@@ -16,13 +16,19 @@ case "${1:-on}" in
   on)
     if is_running camera; then ok "camera already on"; exit 0; fi
     [[ -e "$DEV" ]] || { err "$DEV not found. Is the Brio plugged in? (v4l2-ctl --list-devices)"; exit 1; }
-    holders="$(fuser "$DEV" 2>/dev/null | tr -s ' ' ',' | sed 's/^,//; s/,$//')"
+    # reserve it: the dashboard (EYES feed) lets go within a second and then shows our preview instead
+    mkdir -p "$RUN_DIR" && touch "$RUN_DIR/camera_reserved"
+    for _ in $(seq 20); do
+      holders="$(fuser "$DEV" 2>/dev/null | tr -s ' ' ',' | sed 's/^,//; s/,$//')"
+      [[ -z "$holders" ]] && break
+      sleep 0.25
+    done
     if [[ -n "$holders" ]]; then
       err "$DEV is in use by:"; ps -o pid=,args= -p "$holders" | cut -c1-100 | sed 's/^/        /' >&2; exit 1
     fi
     start_bg camera python3 "$PROJECT_DIR/nodes/camera_node.py" --ros-args \
       -p device:="$DEV" -p width:="$CAMERA_WIDTH" -p height:="$CAMERA_HEIGHT" -p tag_size:="$TAG_SIZE"
-    if wait_topic /tags 15; then ok "camera on ($DEV → /tags, preview /camera/image/compressed)"
+    if wait_topic /tags 30; then ok "camera on ($DEV → /tags, preview /camera/image/compressed)"
     else err "camera started but no /tags: see $LOG_DIR/camera.log"; stop_bg camera; exit 1; fi
     if [[ ! -f "$PROJECT_DIR/config/camera_intrinsics.yaml" ]]; then
       warn "camera not calibrated yet: tools/calibrate_camera.py (tag distances ~5% off until then)"

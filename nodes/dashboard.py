@@ -42,6 +42,7 @@ LOGS = {n: os.path.join(LOG_DIR, n + '.log') for n in
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
 PORT = int(os.environ.get('DASH_PORT', '8088'))
 AREA_FILE = os.path.expanduser('~/.campus_bot/run/dash_map')
+CAM_RESERVED = os.path.expanduser('~/.campus_bot/run/camera_reserved')   # touched by run/camera.sh on
 
 
 def _initial_area():
@@ -155,13 +156,24 @@ class Ros(Node):
 
 class Camera:
     """Grabs frames only while a browser polled /frame.jpg in the last few seconds
-    (snapshot polling renders in every browser, unlike MJPEG streams in Safari)."""
-    def __init__(self):
+    (snapshot polling renders in every browser, unlike MJPEG streams in Safari).
+    The robot's camera_node always wins: the device is released (and not reopened) while
+    run/camera.sh has just reserved it or camera_node's preview is arriving."""
+    def __init__(self, ros):
+        self.ros = ros
         self.lock = threading.Lock()
         self.jpg = None
         self.err = b''
         self.last_req = 0.0
         self.running = False
+
+    def reserved(self):
+        try:
+            if time.time() - os.path.getmtime(CAM_RESERVED) < 20.0:
+                return True
+        except OSError:
+            pass
+        return self.ros.cam_jpg is not None and time.time() - self.ros.cam_t < 3.0
 
     def _loop(self):
         import sys
@@ -174,7 +186,7 @@ class Camera:
                 self.running = False
             return
         try:
-            while time.time() - self.last_req < 5.0:
+            while time.time() - self.last_req < 5.0 and not self.reserved():
                 ok, img = cap.read()
                 if not ok:
                     break
@@ -193,7 +205,7 @@ class Camera:
     def get(self):
         with self.lock:
             self.last_req = time.time()
-            if not self.running:
+            if not self.running and not self.reserved():
                 self.running = True
                 self.err = b''
                 threading.Thread(target=self._loop, daemon=True).start()
@@ -525,7 +537,7 @@ class Handler(BaseHTTPRequestHandler):
                     refresh_map()
                     self.state.job = f'starting navigation on {name} (takes ~1 min) ...'
                     subprocess.Popen(['setsid', 'bash', os.path.join(PROJECT, 'run', 'nav.sh'),
-                                      name, '--yes'],
+                                      name, '--yes', '--no-rviz'],
                                      stdout=open(os.path.expanduser('~/.campus_bot/logs/nav_run.log'), 'w'),
                                      stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                      start_new_session=True)
@@ -640,7 +652,7 @@ def main():
     ros = Ros()
     threading.Thread(target=lambda: rclpy.spin(ros), daemon=True).start()
     Handler.ros = ros
-    Handler.cam = Camera()
+    Handler.cam = Camera(ros)
     Handler.state = State()
     srv = ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
     print(f'dashboard on http://0.0.0.0:{PORT}  (map: {AREA})', flush=True)
