@@ -41,7 +41,8 @@ slam_toolbox:
     use_scan_matching: true
     use_scan_barycenter: true
     minimum_travel_distance: 0.5
-    minimum_travel_heading: 0.5
+    minimum_travel_heading: 0.25          # match twice as often while turning: less rotation per match
+                                           # (2026-10-07: turns at the glass/TV corner broke the map)
     check_min_dist_and_heading_precisely: false
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 12.0   # office-scale (was 10)
@@ -66,7 +67,8 @@ slam_toolbox:
 
     # Scan matcher parameters
     distance_variance_penalty: 0.5
-    angle_variance_penalty: 1.0
+    angle_variance_penalty: 2.0            # trust the calibrated odometry heading more against the
+                                           # repeating desk rows + glass (rotation aliasing, 2026-10-07)
     fine_search_angle_offset: 0.00349
     coarse_search_angle_offset: 0.349
     coarse_angle_resolution: 0.0349
