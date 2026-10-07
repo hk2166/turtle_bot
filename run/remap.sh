@@ -297,7 +297,8 @@ if (( NAV )); then
   if (( RVIZ )) && ! is_running rviz; then start_bg rviz rviz2 -d "$PROJECT_DIR/config/campus_bot.rviz"; fi
   # One composed process (separate processes loaded the Pi to a load average of 20). Until the robot
   # has a pose the planner waits for it (initial_transform_timeout in config/nav2_params.yaml).
-  start_bg nav ros2 launch nav2_bringup bringup_launch.py \
+  # launch/nav2.launch.py = the stock bringup_launch.py with a 10 s lifecycle bond timeout.
+  start_bg nav ros2 launch "$PROJECT_DIR/launch/nav2.launch.py" \
     map:="$NAVMAP" params_file:="$PROJECT_DIR/config/nav2_params.yaml" \
     use_sim_time:=False autostart:=True use_composition:=True
   if ! timeout --foreground 60 bash -c 'until ros2 lifecycle get /amcl 2>/dev/null | grep -q "^active"; do sleep 1; done'; then
