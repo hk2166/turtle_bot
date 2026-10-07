@@ -21,3 +21,7 @@ recovered/
 maps/*.posegraph
 maps/*.data
 maps/.prev/
+
+# generated: the fence-baked navigation map (rebuilt from config/fence_*.yaml at nav start)
+maps/*_fenced.pgm
+maps/*_fenced.yaml

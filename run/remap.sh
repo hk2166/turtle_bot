@@ -226,7 +226,12 @@ fi   # ---------------------------------------------------- end of mapping (NAV_
 
 # ------------------------------------------------------------------------------------------------
 if (( NAV )); then
-  say "Autonomy: AMCL + Nav2 on maps/${AREA}_clean.yaml"
+  NAVMAP="${MAP}_clean.yaml"
+  if [[ -f "$PROJECT_DIR/config/fence_${AREA}.yaml" ]]; then
+    python3 tools/fence_map.py bake "$AREA" >/dev/null && NAVMAP="${MAP}_fenced.yaml" \
+      && ok "virtual boundary applied (config/fence_${AREA}.yaml)"
+  fi
+  say "Autonomy: AMCL + Nav2 on $(basename "$NAVMAP")"
   POSE=""
   (( NAV_ONLY )) || POSE="$(python3 tools/pose_tool.py get || true)"
   stop_bg slam; stop_bg nav; stop_bg loc
@@ -234,7 +239,7 @@ if (( NAV )); then
   # One composed process (separate processes loaded the Pi to a load average of 20). Until the robot
   # has a pose the planner waits for it (initial_transform_timeout in config/nav2_params.yaml).
   start_bg nav ros2 launch nav2_bringup bringup_launch.py \
-    map:="${MAP}_clean.yaml" params_file:="$PROJECT_DIR/config/nav2_params.yaml" \
+    map:="$NAVMAP" params_file:="$PROJECT_DIR/config/nav2_params.yaml" \
     use_sim_time:=False autostart:=True use_composition:=True
   if ! timeout --foreground 60 bash -c 'until ros2 lifecycle get /amcl 2>/dev/null | grep -q "^active"; do sleep 1; done'; then
     err "AMCL didn't come up: see $LOG_DIR/nav.log"; exit 1

@@ -22,8 +22,12 @@ import cv2
 import numpy as np
 import rclpy
 import yaml
+sys_path_added = True
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Path
+from nav2_msgs.srv import LoadMap
 from action_msgs.msg import GoalStatus, GoalStatusArray
 from rclpy.duration import Duration
 from rclpy.node import Node
@@ -54,6 +58,7 @@ class Ros(Node):
         self.nav_state = 'IDLE'
         self.goal = None
         self.create_subscription(Path, '/plan', self.on_plan, 10)
+        self.load_map_cli = self.create_client(LoadMap, '/map_server/load_map')
         self.create_subscription(GoalStatusArray, '/navigate_to_pose/_action/status', self.on_status, 10)
 
     def on_plan(self, msg):
@@ -90,6 +95,19 @@ class Ros(Node):
         m.pose.covariance[0] = m.pose.covariance[7] = 0.25 ** 2
         m.pose.covariance[35] = math.radians(15) ** 2
         self.pub_init.publish(m)
+
+    def reload_map(self, yaml_path):
+        if not self.load_map_cli.wait_for_service(timeout_sec=3.0):
+            return 'map server not running (fence saved; applies on next nav start)'
+        req = LoadMap.Request()
+        req.map_url = yaml_path
+        fut = self.load_map_cli.call_async(req)
+        t0 = time.time()
+        while not fut.done() and time.time() - t0 < 10:
+            time.sleep(0.1)
+        if fut.done() and fut.result() and fut.result().result == 0:
+            return 'boundary live: planner now fenced in'
+        return 'map reload failed (fence saved; applies on next nav start)'
 
     def stop(self):
         p = self.pose()
@@ -184,8 +202,10 @@ class State:
 
 
 def load_map():
-    meta = yaml.safe_load(open(os.path.join(PROJECT, 'maps', f'{AREA}_clean.yaml')))
-    img = cv2.imread(os.path.join(PROJECT, 'maps', f'{AREA}_clean.pgm'), -1)
+    fenced = os.path.join(PROJECT, 'maps', f'{AREA}_fenced.yaml')
+    base = fenced if os.path.exists(fenced) else os.path.join(PROJECT, 'maps', f'{AREA}_clean.yaml')
+    meta = yaml.safe_load(open(base))
+    img = cv2.imread(os.path.join(PROJECT, 'maps', meta['image']), -1)
     v = np.full((*img.shape, 3), 14, np.uint8)
     v[img == 254] = (24, 34, 24)        # free floor: very dark green-grey
     v[img == 205] = (14, 16, 14)        # unknown: near black
@@ -195,6 +215,11 @@ def load_map():
 
 
 MAP_PNG, MAP_META, MAP_SHAPE = load_map()
+
+
+def refresh_map():
+    global MAP_PNG, MAP_META, MAP_SHAPE
+    MAP_PNG, MAP_META, MAP_SHAPE = load_map()
 PAGE = open(os.path.join(PROJECT, 'nodes', 'dashboard.html'), 'rb').read()
 
 
@@ -224,8 +249,9 @@ class Handler(BaseHTTPRequestHandler):
             o = MAP_META['origin']
             d = {'pose': self.ros.pose(), 'plan': self.ros.plan, 'goal': self.ros.goal,
                  'nav': self.ros.nav_state if s['nav_up'] else 'NAV DOWN (run/nav.sh office)',
-                 'fit': self.state.fit_msg, 'map': {'res': res, 'ox': o[0], 'oy': o[1],
-                                                    'h': MAP_SHAPE[0], 'w': MAP_SHAPE[1]}, **s}
+                 'fit': self.state.fit_msg, 'fence': __import__('fence_map').load_fence(AREA),
+                 'map': {'res': res, 'ox': o[0], 'oy': o[1],
+                         'h': MAP_SHAPE[0], 'w': MAP_SHAPE[1]}, **s}
             self.send(200, 'application/json', json.dumps(d).encode())
         elif self.path.startswith('/api/logs'):
             name = (self.path.split('f=')[1].split('&')[0] if 'f=' in self.path else 'nav')
@@ -279,6 +305,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, 'application/json', b'{"ok":true}')
         elif self.path == '/api/pose':
             self.ros.send_pose(body['x'], body['y'], body.get('yaw', 0.0))
+            self.send(200, 'application/json', b'{"ok":true}')
+        elif self.path == '/api/fence':
+            import fence_map
+            lines = fence_map.load_fence(AREA)
+            pts = body.get('points') or []
+            if body.get('clear'):
+                lines = []
+            else:
+                for a, b in zip(pts, pts[1:]):
+                    lines.append([a[0], a[1], b[0], b[1]])
+            fence_map.save_fence(AREA, lines)
+            fence_map.bake(AREA)
+            refresh_map()
+            msg = self.ros.reload_map(os.path.join(PROJECT, 'maps', f'{AREA}_fenced.yaml'))
+            self.state.fit_msg = f'{len(lines)} fence segment(s) — {msg}'
             self.send(200, 'application/json', b'{"ok":true}')
         elif self.path == '/api/fit':
             mode = body.get('mode', 'start')

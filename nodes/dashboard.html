@@ -7,6 +7,7 @@
 :root{--bg:#060a06;--panel:#0a120a;--line:#1d3a1d;--fg:#49f07a;--dim:#2c7a46;--warn:#ffb347;--bad:#ff5566}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
+h1{display:flex;align-items:center;flex-wrap:wrap;gap:4px}
 body{background:var(--bg);color:var(--fg);font:13px/1.45 "SF Mono","Fira Code",ui-monospace,Menlo,monospace;
      display:flex;flex-direction:column;gap:8px;padding:10px}
 body::after{content:"";position:fixed;inset:0;pointer-events:none;
@@ -42,6 +43,25 @@ button.vtab{font-size:12px;padding:5px 12px;margin-left:10px;vertical-align:midd
 #log{flex:1;min-height:0;overflow-y:auto;font-size:11px;color:var(--dim);white-space:pre-wrap;margin-top:6px}
 .ok{color:var(--fg)}.bad{color:var(--bad)}
 small{color:var(--dim);font-size:11px}
+#setpose.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
+#fenceb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
+/* phones and small tablets: stack and let the PAGE scroll; touch-sized controls */
+@media(max-width:900px){
+ html,body{overflow:auto;height:auto}
+ body{display:block;padding:8px}
+ .grid{display:flex;flex-direction:column;gap:10px}
+ .panel{min-height:0}
+ #mapwrap{height:56dvh}
+ #map{max-height:56dvh}
+ #camwrap{max-height:none;aspect-ratio:16/9}
+ #camwrap2{height:38dvh;flex:none}
+ #log{height:26dvh;flex:none}
+ button{padding:12px 14px;font-size:13px}
+ button.tab{padding:6px 10px;font-size:11px}
+ .padb{padding:22px 0;font-size:26px}
+ #pad{grid-template-columns:repeat(3,minmax(72px,88px))}
+ #bar{font-size:12px;gap:2px 12px}
+}
 </style></head><body>
 <h1>▚ CAMPUS BOT <span class="blink">▮</span>
  <button class="tab vtab on" onclick="setView('mission',this)">MISSION CONTROL</button>
@@ -60,9 +80,13 @@ small{color:var(--dim);font-size:11px}
   <div id="mapwrap"><canvas id="map"></canvas></div>
   <div class="row">
    <button id="stop">■ STOP</button>
+   <button id="setpose" onclick="armPoseBtn()" title="then tap the robot's spot, then tap where it faces">✛ SET POSE</button>
    <button onclick="fit('here')" title="re-fit the scan around where the robot believes it is">⟳ REFRESH POSE</button>
    <button onclick="fit('start')" title="robot is near the mapping start">⌖ RESET POSE</button>
    <button onclick="fit('wide')" title="robot could be anywhere within a few metres of the start">⌖ FIT WIDE</button>
+   <button id="fenceb" onclick="fenceBtn()" title="trace the office boundary: click corner points, then SAVE">⛨ FENCE</button>
+   <button id="fencesave" onclick="fenceSave()" style="display:none">✔ SAVE FENCE</button>
+   <button id="fencecancel" onclick="fenceCancel()" style="display:none">✕</button>
    <small id="fit"></small>
   </div>
  </div>
@@ -134,9 +158,26 @@ window.addEventListener('load',()=>{
  document.getElementById('padstop').addEventListener('pointerdown',()=>{held={f:0,b:0,l:0,r:0};post('/api/stop',{})});
 });
 const cv=document.getElementById('map'),cx=cv.getContext('2d');
-const img=new Image(); img.src='/map.png';
-let M=null,S={},poseClick=null,feedOn=true;
+const img=new Image(); img.id='mapimg'; img.src='/map.png';
 img.onload=()=>{cv.width=img.width;cv.height=img.height;draw()};
+let M=null,S={},poseClick=null,feedOn=true,armPose=false,fenceMode=false,fencePts=[];
+function fenceBtn(){fenceMode=!fenceMode;fencePts=[];
+ document.getElementById('fenceb').classList.toggle('armed',fenceMode);
+ document.getElementById('fencesave').style.display=fenceMode?'':'none';
+ document.getElementById('fencecancel').style.display=fenceMode?'':'none';
+ if(fenceMode)log('FENCE: click along the office boundary (each click adds a corner), then SAVE FENCE')}
+function fenceCancel(){fenceMode=false;fencePts=[];fenceBtn();fenceMode=false;
+ document.getElementById('fenceb').classList.remove('armed');draw()}
+async function fenceSave(){
+ if(fencePts.length<2){log('fence: need at least 2 points');return}
+ await post('/api/fence',{points:fencePts});log(`fence: ${fencePts.length-1} segment(s) saved`);
+ fencePts=[];fenceMode=false;document.getElementById('fenceb').classList.remove('armed');
+ document.getElementById('fencesave').style.display='none';
+ document.getElementById('fencecancel').style.display='none';
+ document.getElementById('mapimg').src='/map.png?'+Date.now()}
+function armPoseBtn(){armPose=!armPose;poseClick=null;
+ document.getElementById('setpose').classList.toggle('armed',armPose);
+ if(armPose)log('SET POSE: tap the robot\'s spot on the map, then tap where it faces')}
 function w2p(x,y){return[(x-M.ox)/M.res,(M.h-1-(y-M.oy)/M.res)]}
 function p2w(px,py){const r=cv.getBoundingClientRect();
   return[M.ox+px/r.width*cv.width*M.res, M.oy+(M.h-1-py/r.height*cv.height)*M.res]}
@@ -151,11 +192,20 @@ function draw(){
   cx.save();cx.translate(a,b);cx.rotate(-S.pose[2]);cx.fillStyle='#8cff9e';cx.shadowColor='#49f07a';
   cx.shadowBlur=10;cx.beginPath();cx.moveTo(9,0);cx.lineTo(-6,5);cx.lineTo(-6,-5);cx.closePath();cx.fill();cx.restore()}
  if(poseClick){const[a,b]=w2p(poseClick[0],poseClick[1]);cx.strokeStyle='#ffb347';cx.strokeRect(a-5,b-5,10,10)}
+ if(S.fence&&S.fence.length){cx.strokeStyle='#ff5566';cx.lineWidth=2;
+  S.fence.forEach(sg=>{const[a,b]=w2p(sg[0],sg[1]),[c,d]=w2p(sg[2],sg[3]);
+   cx.beginPath();cx.moveTo(a,b);cx.lineTo(c,d);cx.stroke()})}
+ if(fencePts.length){cx.strokeStyle='#ff5566';cx.setLineDash([4,3]);cx.lineWidth=2;cx.beginPath();
+  fencePts.forEach((p,i)=>{const[a,b]=w2p(p[0],p[1]);i?cx.lineTo(a,b):cx.moveTo(a,b);});cx.stroke();
+  cx.setLineDash([]);fencePts.forEach(p=>{const[a,b]=w2p(p[0],p[1]);cx.strokeRect(a-3,b-3,6,6)})}
 }
 cv.onclick=async e=>{
  if(!M)return;
  const r=cv.getBoundingClientRect();const[x,y]=p2w(e.clientX-r.left,e.clientY-r.top);
- if(e.shiftKey){poseClick=[x,y];log('pose: now click where the robot FACES');draw();return}
+ if(fenceMode){fencePts.push([x,y]);draw();return}
+ if(e.shiftKey||armPose){if(!poseClick){poseClick=[x,y];armPose=false;
+  document.getElementById('setpose').classList.remove('armed');
+  log('pose: now tap where the robot FACES');draw();return}}
  if(poseClick){const yaw=Math.atan2(y-poseClick[1],x-poseClick[0]);
   await post('/api/pose',{x:poseClick[0],y:poseClick[1],yaw});
   log(`pose set ${poseClick[0].toFixed(2)}, ${poseClick[1].toFixed(2)} @ ${(yaw*57.3).toFixed(0)}°`);
