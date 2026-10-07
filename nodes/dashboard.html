@@ -139,7 +139,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 </div>
 <script>
 let view='mission';
-async async function setView(v,btn){view=v;setTimeout(fitCanvas,50);view=v;
+async function setView(v,btn){view=v;setTimeout(fitCanvas,50);
  document.getElementById('view-mission').style.display=v=='mission'?'grid':'none';
  document.getElementById('view-manual').style.display=v=='manual'?'grid':'none';
  document.querySelectorAll('.vtab').forEach(b=>b.classList.remove('on'));
