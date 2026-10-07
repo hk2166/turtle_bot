@@ -280,7 +280,8 @@ def load_map():
     if not os.path.exists(base):   # brand-new map being created: nothing saved yet
         blank = np.full((200, 200, 3), 14, np.uint8)
         okb, png = cv2.imencode('.png', blank)
-        return png.tobytes(), {'resolution': 0.05, 'origin': [-5.0, -5.0]}, (200, 200)
+        return png.tobytes(), {'resolution': 0.05, 'origin': [-5.0, -5.0],
+                               'A': world_to_px_mat(0.05, -5.0, -5.0, 200)}, (200, 200)
     meta = yaml.safe_load(open(base))
     img = cv2.imread(os.path.join(PROJECT, 'maps', meta['image']), -1)
     # crop the big unknown margins so the office fills the pane; shift the origin to match
