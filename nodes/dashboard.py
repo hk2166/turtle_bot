@@ -251,7 +251,27 @@ def render_grid(grid):
     v[(a >= 0) & (a < 50)] = (24, 34, 24)
     v[a >= 50] = (120, 255, 120)
     ok, png = cv2.imencode('.png', v)
-    return png.tobytes(), {'resolution': res, 'origin': [ox, oy]}, a.shape
+    return (png.tobytes(),
+            {'resolution': res, 'origin': [ox, oy], 'A': world_to_px_mat(res, ox, oy, a.shape[0])},
+            a.shape)
+
+
+def world_to_px_mat(res, ox, oy, h):
+    """3x3: world metres -> image pixels (row 0 = top)."""
+    return np.array([[1.0 / res, 0.0, -ox / res],
+                     [0.0, -1.0 / res, (h - 1) + oy / res],
+                     [0.0, 0.0, 1.0]])
+
+
+def dominant_angle(occ_rc):
+    """Angle (deg) of the dominant wall direction of occupied pixels, in (-45, 45]."""
+    pts = occ_rc[:, ::-1].astype(np.float32)        # (x=col, y=row)
+    a = cv2.minAreaRect(pts)[2]
+    while a > 45:
+        a -= 90
+    while a <= -45:
+        a += 90
+    return a
 
 
 def load_map():
@@ -276,8 +296,30 @@ def load_map():
     v[img == 254] = (24, 34, 24)        # free floor: very dark green-grey
     v[img == 205] = (14, 16, 14)        # unknown: near black
     v[img == 0] = (120, 255, 120)       # walls: phosphor green (BGR)
+
+    A = world_to_px_mat(meta['resolution'], meta['origin'][0], meta['origin'][1], img.shape[0])
+    occ = np.column_stack(np.where(img == 0))
+    if len(occ) > 80:
+        # straighten the office: rotate so the dominant wall direction runs horizontal
+        ang = dominant_angle(occ)
+        h0, w0 = v.shape[:2]
+        R = cv2.getRotationMatrix2D((w0 / 2, h0 / 2), ang, 1.0)
+        cos, sin = abs(R[0, 0]), abs(R[0, 1])
+        w1, h1 = int(h0 * sin + w0 * cos), int(h0 * cos + w0 * sin)
+        R[0, 2] += w1 / 2 - w0 / 2
+        R[1, 2] += h1 / 2 - h0 / 2
+        v = cv2.warpAffine(v, R, (w1, h1), flags=cv2.INTER_NEAREST, borderValue=(14, 16, 14))
+        A = np.vstack([R, [0, 0, 1]]) @ A
+        known = np.any(v != (14, 16, 14), axis=2)
+        bb = content_bbox(known)
+        if bb:
+            r0, r1, c0, c1 = bb
+            v = v[r0:r1 + 1, c0:c1 + 1]
+            A = np.array([[1, 0, -c0], [0, 1, -r0], [0, 0, 1.0]]) @ A
     ok, png = cv2.imencode('.png', v)
-    return png.tobytes(), meta, img.shape
+    meta = dict(meta)
+    meta['A'] = A
+    return png.tobytes(), meta, v.shape[:2]
 
 
 MAP_PNG, MAP_META, MAP_SHAPE = load_map()
@@ -315,23 +357,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, 'image/png', MAP_PNG)
         elif self.path == '/api/state':
             s = self.state.slow()
-            res = MAP_META['resolution']
-            o = MAP_META['origin']
             mapping = pid_alive('slam')
             if mapping and self.ros.grid is not None:
-                _, m_meta, m_shape = render_grid(self.ros.grid)
-                res, o = m_meta['resolution'], {'0': m_meta['origin'][0], '1': m_meta['origin'][1]}
-                o = m_meta['origin']
-                shape = m_shape
+                _, m_meta, shape = render_grid(self.ros.grid)
             else:
-                res, o, shape = MAP_META['resolution'], MAP_META['origin'], MAP_SHAPE
+                m_meta, shape = MAP_META, MAP_SHAPE
+            A = np.asarray(m_meta['A'])
+            Ainv = np.linalg.inv(A)
             d = {'pose': self.ros.pose(), 'plan': self.ros.plan, 'goal': self.ros.goal,
                  'mode': 'MAPPING' if mapping else ('NAV' if s['nav_up'] else 'DOWN'),
                  'maps': list_maps(), 'current': AREA, 'job': self.state.job,
                  'nav': ('MAPPING %s — drive in MANUAL, then SAVE MAP' % AREA) if mapping
                         else (self.ros.nav_state if s['nav_up'] else 'NAV DOWN (pick a map → NAVIGATE)'),
                  'fit': self.state.fit_msg, 'fence': __import__('fence_map').load_fence(AREA),
-                 'map': {'res': res, 'ox': o[0], 'oy': o[1],
+                 'map': {'A': A[:2].tolist(), 'Ainv': Ainv[:2].tolist(),
                          'h': shape[0], 'w': shape[1]}, **s}
             self.send(200, 'application/json', json.dumps(d).encode())
         elif self.path.startswith('/api/logs'):

@@ -187,7 +187,7 @@ async function fenceSave(){
 function armPoseBtn(){armPose=!armPose;poseClick=null;
  document.getElementById('setpose').classList.toggle('armed',armPose);
  if(armPose)log('SET POSE: tap the robot\'s spot on the map, then tap where it faces')}
-function w2p(x,y){return[(x-M.ox)/M.res,(M.h-1-(y-M.oy)/M.res)]}
+function w2p(x,y){const A=M.A;return[A[0][0]*x+A[0][1]*y+A[0][2], A[1][0]*x+A[1][1]*y+A[1][2]]}
 // view transform: zoom (wheel / pinch) + pan (drag). Z.s=1 shows the whole map.
 let Z={s:1,tx:0,ty:0};
 function clampZ(){Z.s=Math.max(1,Math.min(14,Z.s));
@@ -196,7 +196,7 @@ function evCanvas(e){const r=cv.getBoundingClientRect();
  return[(e.clientX-r.left)*cv.width/r.width,(e.clientY-r.top)*cv.height/r.height]}
 function p2w(px,py){const r=cv.getBoundingClientRect();
  const cxp=((px)*cv.width/r.width-Z.tx)/Z.s, cyp=((py)*cv.height/r.height-Z.ty)/Z.s;
- return[M.ox+cxp*M.res, M.oy+(M.h-1-cyp)*M.res]}
+ const B=M.Ainv;return[B[0][0]*cxp+B[0][1]*cyp+B[0][2], B[1][0]*cxp+B[1][1]*cyp+B[1][2]]}
 cv.addEventListener('wheel',e=>{e.preventDefault();
  const[mx,my]=evCanvas(e);const f=e.deltaY<0?1.2:1/1.2;const s0=Z.s;
  Z.s*=f;clampZ();const g=Z.s/s0;
@@ -233,7 +233,9 @@ function draw(){
  if(S.goal){const[a,b]=w2p(S.goal[0],S.goal[1]);cx.strokeStyle='#ffb347';cx.lineWidth=2*L;
   cx.beginPath();cx.arc(a,b,6*L,0,7);cx.moveTo(a-9*L,b);cx.lineTo(a+9*L,b);cx.moveTo(a,b-9*L);cx.lineTo(a,b+9*L);cx.stroke()}
  if(S.pose){const[a,b]=w2p(S.pose[0],S.pose[1]);
-  cx.save();cx.translate(a,b);cx.rotate(-S.pose[2]);cx.scale(L,L);cx.fillStyle='#8cff9e';cx.shadowColor='#49f07a';
+  const hx=M.A[0][0]*Math.cos(S.pose[2])+M.A[0][1]*Math.sin(S.pose[2]),
+        hy=M.A[1][0]*Math.cos(S.pose[2])+M.A[1][1]*Math.sin(S.pose[2]);
+  cx.save();cx.translate(a,b);cx.rotate(Math.atan2(hy,hx));cx.scale(L,L);cx.fillStyle='#8cff9e';cx.shadowColor='#49f07a';
   cx.shadowBlur=10;cx.beginPath();cx.moveTo(9,0);cx.lineTo(-6,5);cx.lineTo(-6,-5);cx.closePath();cx.fill();cx.restore()}
  if(poseClick){const[a,b]=w2p(poseClick[0],poseClick[1]);cx.strokeStyle='#ffb347';cx.lineWidth=2*L;cx.strokeRect(a-5*L,b-5*L,10*L,10*L)}
  if(S.fence&&S.fence.length){cx.strokeStyle='#ff5566';cx.lineWidth=2*L;
