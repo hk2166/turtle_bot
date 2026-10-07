@@ -222,15 +222,36 @@ def list_maps():
                   for p in glob.glob(os.path.join(PROJECT, 'maps', '*_clean.yaml')))
 
 
+def content_bbox(known, margin=8, min_cells=8):
+    """Rows/cols holding a meaningful amount of mapped cells (stray speckle ignored), padded."""
+    rows = np.flatnonzero(known.sum(axis=1) >= min_cells)
+    cols = np.flatnonzero(known.sum(axis=0) >= min_cells)
+    if not len(rows) or not len(cols):
+        rows = np.flatnonzero(known.any(axis=1))
+        cols = np.flatnonzero(known.any(axis=0))
+    if not len(rows):
+        return None
+    return (max(0, rows[0] - margin), min(known.shape[0] - 1, rows[-1] + margin),
+            max(0, cols[0] - margin), min(known.shape[1] - 1, cols[-1] + margin))
+
+
 def render_grid(grid):
-    """Live /map (while mapping) in the same green theme as the static map."""
-    a = np.asarray(grid.data, np.int16).reshape(grid.info.height, grid.info.width)[::-1]
+    """Live /map (while mapping), cropped to the mapped area, same green theme as the static map."""
+    res = grid.info.resolution
+    ox, oy = grid.info.origin.position.x, grid.info.origin.position.y
+    a0 = np.asarray(grid.data, np.int16).reshape(grid.info.height, grid.info.width)  # row 0 = bottom
+    bb = content_bbox(a0 >= 0)
+    if bb:
+        r0, r1, c0, c1 = bb
+        a0 = a0[r0:r1 + 1, c0:c1 + 1]
+        ox += c0 * res
+        oy += r0 * res
+    a = a0[::-1]
     v = np.full((*a.shape, 3), 14, np.uint8)
     v[(a >= 0) & (a < 50)] = (24, 34, 24)
     v[a >= 50] = (120, 255, 120)
     ok, png = cv2.imencode('.png', v)
-    return png.tobytes(), {'resolution': grid.info.resolution,
-                           'origin': [grid.info.origin.position.x, grid.info.origin.position.y]}, a.shape
+    return png.tobytes(), {'resolution': res, 'origin': [ox, oy]}, a.shape
 
 
 def load_map():
@@ -242,6 +263,15 @@ def load_map():
         return png.tobytes(), {'resolution': 0.05, 'origin': [-5.0, -5.0]}, (200, 200)
     meta = yaml.safe_load(open(base))
     img = cv2.imread(os.path.join(PROJECT, 'maps', meta['image']), -1)
+    # crop the big unknown margins so the office fills the pane; shift the origin to match
+    bb = content_bbox(img != 205)        # pgm: row 0 = TOP
+    if bb:
+        r0, r1, c0, c1 = bb
+        H = img.shape[0]
+        meta = dict(meta)
+        meta['origin'] = [meta['origin'][0] + c0 * meta['resolution'],
+                          meta['origin'][1] + (H - 1 - r1) * meta['resolution'], 0]
+        img = img[r0:r1 + 1, c0:c1 + 1]
     v = np.full((*img.shape, 3), 14, np.uint8)
     v[img == 254] = (24, 34, 24)        # free floor: very dark green-grey
     v[img == 205] = (14, 16, 14)        # unknown: near black
