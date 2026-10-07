@@ -1,9 +1,0 @@
-Map OpenOfficeMap  (361×308 cells at 0.05 m = 18.1 × 15.4 m)
-  mapped extent      15.8 × 14.2 m
-  free floor         106.6 m²
-  occupied cells     4021
-  specks removed     96  (≤ 6 cells, not near unknown)
-  holes filled       319  (≤ 40 cells, enclosed)
-  spray removed      0.7 m² of unreachable "free" (glass bleed)
-  NOTE: statistics only. The original grading metric has not been recovered.
-  Check by eye: walls single and straight, glass room reads as a wall, loop closed with no doubling.

@@ -1,8 +1,0 @@
-Map pantry  (377×284 cells at 0.05 m = 18.9 × 14.2 m)
-  mapped extent      18.0 × 13.8 m
-  free floor         97.8 m²
-  occupied cells     4266
-  specks removed     103  (≤ 3 cells, not near unknown)
-  holes filled       514  (≤ 25 cells, enclosed)
-  NOTE: statistics only. The original grading metric has not been recovered.
-  Check by eye: walls single and straight, glass room reads as a wall, loop closed with no doubling.

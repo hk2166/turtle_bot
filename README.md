@@ -163,7 +163,7 @@ One-time set-up (camera off for steps 3–4: `run/camera.sh off`):
    from the axle centre to the tag centre and the tag centre's height, then
    `python3 tools/camera_pose.py --wall <D> <H> --write`. D is from the **drive-wheel axle**, not the
    front caster (~17.5 cm ahead of it). The lidar sits on the axle, so its range straight ahead to the
-   tag's surface is D. Measured 2026-10-08: lens 0.42 m up, 10 cm behind the axle, 6.4° down.
+   tag's surface is D. Measured 2026-10-08: lens 0.42 m up, ~5.5 cm behind the axle, 6.4° down.
 5. **Put the tags up in pairs:** two tags 0.6–1 m apart on the same wall, both with their centre at
    **0.4–0.5 m** above the floor and upright (TOP up). The camera is 0.42 m up and sees only from the
    floor to ~0.6 m at 1 m away, or ~0.9 m at 3 m. Anything higher is out of view. A pair in view gives about 1–10 cm and under 1.5° from up to 4 m in simulation;
