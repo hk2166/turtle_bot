@@ -40,7 +40,28 @@ LOGS = {n: os.path.join(LOG_DIR, n + '.log') for n in
         ('nav', 'bringup', 'auto', 'tags', 'slam', 'agent', 'dashboard')}
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
 PORT = int(os.environ.get('DASH_PORT', '8088'))
-AREA = os.environ.get('DASH_MAP', 'office')
+AREA_FILE = os.path.expanduser('~/.campus_bot/run/dash_map')
+
+
+def _initial_area():
+    try:
+        a = open(AREA_FILE).read().strip()
+        if a and os.path.exists(os.path.join(PROJECT, 'maps', f'{a}_clean.yaml')):
+            return a
+    except OSError:
+        pass
+    return os.environ.get('DASH_MAP', 'office')
+
+
+def remember_area(a):
+    try:
+        os.makedirs(os.path.dirname(AREA_FILE), exist_ok=True)
+        open(AREA_FILE, 'w').write(a)
+    except OSError:
+        pass
+
+
+AREA = _initial_area()
 NAV_STATE = {GoalStatus.STATUS_ACCEPTED: 'GOAL ACCEPTED', GoalStatus.STATUS_EXECUTING: 'DRIVING',
              GoalStatus.STATUS_CANCELING: 'CANCELING', GoalStatus.STATUS_SUCCEEDED: 'GOAL REACHED',
              GoalStatus.STATUS_CANCELED: 'GOAL CANCELED', GoalStatus.STATUS_ABORTED: 'GOAL FAILED'}
@@ -489,6 +510,7 @@ class Handler(BaseHTTPRequestHandler):
                     subprocess.run(['bash', os.path.join(PROJECT, 'run', 'stop.sh'), '--keep-dashboard'],
                                    capture_output=True, timeout=120)
                     AREA = name
+                    remember_area(name)
                     refresh_map()
                     self.state.job = f'starting navigation on {name} (takes ~1 min) ...'
                     subprocess.Popen(['setsid', 'bash', os.path.join(PROJECT, 'run', 'nav.sh'),
@@ -521,6 +543,7 @@ class Handler(BaseHTTPRequestHandler):
                                        capture_output=True, text=True, timeout=300)
                     if r.returncode == 0:
                         AREA = name
+                        remember_area(name)
                         refresh_map()
                         self.state.job = f'MAPPING {name}: drive with the MANUAL tab, watch the map grow, then SAVE MAP'
                     else:
