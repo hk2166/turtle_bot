@@ -85,7 +85,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 </div>
 <div class="grid" id="view-mission">
  <div class="panel">
-  <h2>TACTICAL MAP — click: goal · shift-click then click: robot is HERE → faces THERE</h2>
+  <h2>TACTICAL MAP — click: goal · shift-click ×2: set pose · wheel/pinch: zoom · drag: pan · dbl-click: reset</h2>
   <div id="mapwrap"><canvas id="map"></canvas></div>
   <div class="row">
    <button id="stop">■ STOP</button>
@@ -188,27 +188,62 @@ function armPoseBtn(){armPose=!armPose;poseClick=null;
  document.getElementById('setpose').classList.toggle('armed',armPose);
  if(armPose)log('SET POSE: tap the robot\'s spot on the map, then tap where it faces')}
 function w2p(x,y){return[(x-M.ox)/M.res,(M.h-1-(y-M.oy)/M.res)]}
+// view transform: zoom (wheel / pinch) + pan (drag). Z.s=1 shows the whole map.
+let Z={s:1,tx:0,ty:0};
+function clampZ(){Z.s=Math.max(1,Math.min(14,Z.s));
+ Z.tx=Math.min(0,Math.max(cv.width*(1-Z.s),Z.tx));Z.ty=Math.min(0,Math.max(cv.height*(1-Z.s),Z.ty))}
+function evCanvas(e){const r=cv.getBoundingClientRect();
+ return[(e.clientX-r.left)*cv.width/r.width,(e.clientY-r.top)*cv.height/r.height]}
 function p2w(px,py){const r=cv.getBoundingClientRect();
-  return[M.ox+px/r.width*cv.width*M.res, M.oy+(M.h-1-py/r.height*cv.height)*M.res]}
+ const cxp=((px)*cv.width/r.width-Z.tx)/Z.s, cyp=((py)*cv.height/r.height-Z.ty)/Z.s;
+ return[M.ox+cxp*M.res, M.oy+(M.h-1-cyp)*M.res]}
+cv.addEventListener('wheel',e=>{e.preventDefault();
+ const[mx,my]=evCanvas(e);const f=e.deltaY<0?1.2:1/1.2;const s0=Z.s;
+ Z.s*=f;clampZ();const g=Z.s/s0;
+ Z.tx=mx-g*(mx-Z.tx);Z.ty=my-g*(my-Z.ty);clampZ();draw()},{passive:false});
+cv.addEventListener('dblclick',()=>{Z={s:1,tx:0,ty:0};draw()});
+let ptrs=new Map(),panStart=null,moved=0,pinch0=null;
+cv.style.touchAction='none';
+cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);
+ ptrs.set(e.pointerId,[e.clientX,e.clientY]);moved=0;
+ if(ptrs.size==1)panStart={x:e.clientX,y:e.clientY,tx:Z.tx,ty:Z.ty};
+ if(ptrs.size==2){const a=[...ptrs.values()];pinch0={d:Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]),s:Z.s}}});
+cv.addEventListener('pointermove',e=>{
+ if(!ptrs.has(e.pointerId))return;
+ ptrs.set(e.pointerId,[e.clientX,e.clientY]);
+ if(ptrs.size==2&&pinch0){const a=[...ptrs.values()];
+  const d=Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]);
+  Z.s=pinch0.s*d/pinch0.d;clampZ();draw();moved=99;return}
+ if(panStart){const dx=e.clientX-panStart.x,dy=e.clientY-panStart.y;moved=Math.max(moved,Math.hypot(dx,dy));
+  if(moved>6){const r=cv.getBoundingClientRect();
+   Z.tx=panStart.tx+dx*cv.width/r.width;Z.ty=panStart.ty+dy*cv.height/r.height;clampZ();draw()}}});
+cv.addEventListener('pointerup',e=>{
+ const wasTap=moved<=6&&ptrs.size==1;
+ ptrs.delete(e.pointerId);if(ptrs.size<2)pinch0=null;if(ptrs.size==0)panStart=null;
+ if(wasTap)handleTap(e)});
+cv.addEventListener('pointercancel',e=>{ptrs.delete(e.pointerId);pinch0=null;panStart=null});
 function draw(){
+ cx.setTransform(1,0,0,1,0,0);cx.fillStyle='#060a06';cx.fillRect(0,0,cv.width,cv.height);
+ cx.setTransform(Z.s,0,0,Z.s,Z.tx,Z.ty);
+ const L=1/Z.s;
  cx.drawImage(img,0,0);
  if(!M)return;
- if(S.plan&&S.plan.length>1){cx.strokeStyle='#49f07a';cx.lineWidth=1.5;cx.beginPath();
+ if(S.plan&&S.plan.length>1){cx.strokeStyle='#49f07a';cx.lineWidth=1.5*L;cx.beginPath();
   S.plan.forEach((p,i)=>{const[a,b]=w2p(p[0],p[1]);i?cx.lineTo(a,b):cx.moveTo(a,b)});cx.stroke()}
- if(S.goal){const[a,b]=w2p(S.goal[0],S.goal[1]);cx.strokeStyle='#ffb347';cx.lineWidth=2;
-  cx.beginPath();cx.arc(a,b,6,0,7);cx.moveTo(a-9,b);cx.lineTo(a+9,b);cx.moveTo(a,b-9);cx.lineTo(a,b+9);cx.stroke()}
+ if(S.goal){const[a,b]=w2p(S.goal[0],S.goal[1]);cx.strokeStyle='#ffb347';cx.lineWidth=2*L;
+  cx.beginPath();cx.arc(a,b,6*L,0,7);cx.moveTo(a-9*L,b);cx.lineTo(a+9*L,b);cx.moveTo(a,b-9*L);cx.lineTo(a,b+9*L);cx.stroke()}
  if(S.pose){const[a,b]=w2p(S.pose[0],S.pose[1]);
-  cx.save();cx.translate(a,b);cx.rotate(-S.pose[2]);cx.fillStyle='#8cff9e';cx.shadowColor='#49f07a';
+  cx.save();cx.translate(a,b);cx.rotate(-S.pose[2]);cx.scale(L,L);cx.fillStyle='#8cff9e';cx.shadowColor='#49f07a';
   cx.shadowBlur=10;cx.beginPath();cx.moveTo(9,0);cx.lineTo(-6,5);cx.lineTo(-6,-5);cx.closePath();cx.fill();cx.restore()}
- if(poseClick){const[a,b]=w2p(poseClick[0],poseClick[1]);cx.strokeStyle='#ffb347';cx.strokeRect(a-5,b-5,10,10)}
- if(S.fence&&S.fence.length){cx.strokeStyle='#ff5566';cx.lineWidth=2;
+ if(poseClick){const[a,b]=w2p(poseClick[0],poseClick[1]);cx.strokeStyle='#ffb347';cx.lineWidth=2*L;cx.strokeRect(a-5*L,b-5*L,10*L,10*L)}
+ if(S.fence&&S.fence.length){cx.strokeStyle='#ff5566';cx.lineWidth=2*L;
   S.fence.forEach(sg=>{const[a,b]=w2p(sg[0],sg[1]),[c,d]=w2p(sg[2],sg[3]);
    cx.beginPath();cx.moveTo(a,b);cx.lineTo(c,d);cx.stroke()})}
- if(fencePts.length){cx.strokeStyle='#ff5566';cx.setLineDash([4,3]);cx.lineWidth=2;cx.beginPath();
+ if(fencePts.length){cx.strokeStyle='#ff5566';cx.setLineDash([4*L,3*L]);cx.lineWidth=2*L;cx.beginPath();
   fencePts.forEach((p,i)=>{const[a,b]=w2p(p[0],p[1]);i?cx.lineTo(a,b):cx.moveTo(a,b);});cx.stroke();
-  cx.setLineDash([]);fencePts.forEach(p=>{const[a,b]=w2p(p[0],p[1]);cx.strokeRect(a-3,b-3,6,6)})}
+  cx.setLineDash([]);fencePts.forEach(p=>{const[a,b]=w2p(p[0],p[1]);cx.strokeRect(a-3*L,b-3*L,6*L,6*L)})}
 }
-cv.onclick=async e=>{
+async function handleTap(e){
  if(!M)return;
  const r=cv.getBoundingClientRect();const[x,y]=p2w(e.clientX-r.left,e.clientY-r.top);
  if(fenceMode){fencePts.push([x,y]);draw();return}
@@ -220,6 +255,7 @@ cv.onclick=async e=>{
   log(`pose set ${poseClick[0].toFixed(2)}, ${poseClick[1].toFixed(2)} @ ${(yaw*57.3).toFixed(0)}°`);
   poseClick=null;return}
  await post('/api/goal',{x,y});log(`goal → ${x.toFixed(2)}, ${y.toFixed(2)}`)}
+
 document.getElementById('stop').onclick=async()=>{await post('/api/stop',{});log('STOP sent')};
 async function fit(mode){await post('/api/fit',{mode});log('pose fit started ('+mode+')')}
 async function post(u,b){return fetch(u,{method:'POST',body:JSON.stringify(b)})}
