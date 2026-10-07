@@ -56,7 +56,7 @@ def tag_page(tag_id, size_mm):
     d.text((A4[0] // 2, y + mm(10)), 'this bar must measure 100 mm (print at 100%)', fill=0, font=font(4.5),
            anchor='mm')
     d.text((A4[0] // 2, y + mm(22)),
-           'Mount flat on a wall at 1.2–1.8 m, upright (TOP up), not on glass doors or anything that moves.',
+           'Mount flat, centre at knee height (0.4-0.5 m), upright (TOP up), not on glass doors or anything that moves.',
            fill=0, font=font(4), anchor='mm')
     return page
 
