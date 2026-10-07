@@ -98,6 +98,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    <button id="fenceb" onclick="fenceBtn()" title="trace the office boundary: click corner points, then SAVE">⛨ FENCE</button>
    <button id="fencesave" onclick="fenceSave()" style="display:none">✔ SAVE FENCE</button>
    <button id="fencecancel" onclick="fenceCancel()" style="display:none">✕</button>
+   <button onclick="fenceClear()" title="delete ALL fence lines of this map (re-draw from scratch)">⌫ CLEAR FENCE</button>
    <small id="fit"></small>
   </div>
  </div>
@@ -186,6 +187,10 @@ function fenceBtn(){fenceMode=!fenceMode;fencePts=[];
  if(fenceMode)log('FENCE: click along the office boundary (each click adds a corner), then SAVE FENCE')}
 function fenceCancel(){fenceMode=false;fencePts=[];fenceBtn();fenceMode=false;
  document.getElementById('fenceb').classList.remove('armed');draw()}
+async function fenceClear(){
+ if(!confirm('Delete ALL '+((S.fence||[]).length)+' fence line(s) of this map? The planner loses its boundary until you re-draw.'))return;
+ await post('/api/fence',{clear:true});log('fence cleared — re-draw with ⛨ FENCE');
+ document.getElementById('mapimg').src='/map.png?'+Date.now()}
 async function fenceSave(){
  if(fencePts.length<2){log('fence: need at least 2 points');return}
  await post('/api/fence',{points:fencePts});log(`fence: ${fencePts.length-1} segment(s) saved`);
