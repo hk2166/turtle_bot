@@ -437,8 +437,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/api/drive':
             # manual teleop: one Twist per POST. The browser streams while a control is held; when the
             # stream stops (release, hidden tab, WiFi drop) the firmware's 300 ms watchdog halts the robot.
-            vx = max(-0.35, min(0.35, float(body.get('vx', 0.0))))
-            wz = max(-0.9, min(0.9, float(body.get('wz', 0.0))))
+            # hard caps = the robot's limits (robot.env): top ~0.8 m/s, 1.2 rad/s; firmware ramps accel
+            vx = max(-0.8, min(0.8, float(body.get('vx', 0.0))))
+            wz = max(-1.2, min(1.2, float(body.get('wz', 0.0))))
             t = Twist()
             t.linear.x, t.angular.z = vx, wz
             self.ros.pub_stop.publish(t)
