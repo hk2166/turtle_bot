@@ -13,6 +13,9 @@
 #   --nav       then go straight into AMCL + Nav2 on the clean map (set goals in RViz: "Nav2 Goal").
 #               With maps/<area>_tags.yaml, the camera sets AMCL's pose when it has none or is lost.
 #   --nav-only  no mapping: AMCL + Nav2 on the SAVED maps/<area>_clean.yaml (run/nav.sh <area>)
+#   --continue  don't start fresh: reload maps/<area>.posegraph and EXTEND the map. Put the robot on
+#               the ORIGINAL mapping start spot (facing the original way) first, then drive only the
+#               areas that need improving. Saving replaces maps/<area> (old files go to maps/.prev).
 #   --no-camera mapping/navigation without the camera and tags
 #   --sim       no hardware: nodes/sim_robot.py fakes the lidar and ESP32 (for testing; no camera)
 #   --no-rviz   don't open RViz (e.g. over plain SSH)
@@ -25,10 +28,10 @@ set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$PROJECT_DIR"
 
-AREA="" NAV=0 NAV_ONLY=0 CAMERA=1 SIM=0 RVIZ=1 YES=0
+AREA="" NAV=0 NAV_ONLY=0 CAMERA=1 SIM=0 RVIZ=1 YES=0 CONT=0
 for a in "$@"; do
   case "$a" in
-    --nav) NAV=1 ;; --nav-only) NAV=1 NAV_ONLY=1 ;; --no-camera) CAMERA=0 ;;
+    --nav) NAV=1 ;; --nav-only) NAV=1 NAV_ONLY=1 ;; --no-camera) CAMERA=0 ;; --continue) CONT=1 ;;
     --sim) SIM=1 ;; --no-rviz) RVIZ=0 ;; --yes|-y) YES=1 ;;
     -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
     -*) echo "Unknown option $a (see --help)" >&2; exit 2 ;;
@@ -156,8 +159,24 @@ if (( ! NAV_ONLY )); then   # ---------------------------- mapping (steps 5–6 
 
 # ------------------------------------------------------------------------------------------------
 say "5/6 SLAM + RViz"
-stop_bg nav; stop_bg slam   # a fresh map every run
-start_bg slam ros2 launch "$PROJECT_DIR/launch/slam.launch.py"
+stop_bg nav; stop_bg slam   # a fresh map every run (unless --continue)
+SLAM_PARAMS="$PROJECT_DIR/config/slam_toolbox.yaml"
+if (( CONT )); then
+  [[ -f "$PROJECT_DIR/maps/$AREA.posegraph" ]] || { err "no maps/$AREA.posegraph to continue from"; exit 1; }
+  info "CONTINUING maps/$AREA: the robot must be ON the original mapping start spot, facing the"
+  info "original direction (the map's 0,0 — where the first run began)."
+  ask "Is it there now? [y/N]" n || { info "Place it first, then re-run."; exit 1; }
+  SLAM_PARAMS="$RUN_DIR/slam_continue.yaml"
+  python3 - "$PROJECT_DIR/config/slam_toolbox.yaml" "$PROJECT_DIR/maps/$AREA" "$SLAM_PARAMS" <<'PY'
+import sys, yaml
+cfg = yaml.safe_load(open(sys.argv[1]))
+node = next(iter(cfg))
+cfg[node]['ros__parameters'].update({'map_file_name': sys.argv[2], 'map_start_pose': [0.0, 0.0, 0.0]})
+yaml.safe_dump(cfg, open(sys.argv[3], 'w'))
+PY
+  ok "slam_toolbox will reload the saved pose graph and extend it"
+fi
+start_bg slam ros2 launch "$PROJECT_DIR/launch/slam.launch.py" params_file:="$SLAM_PARAMS"
 if wait_topic /map 30; then ok "slam_toolbox mapping (config/slam_toolbox.yaml)"
 else err "slam_toolbox published no /map in 30 s: see $LOG_DIR/slam.log"; exit 1; fi
 if (( RVIZ )); then
