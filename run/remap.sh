@@ -13,9 +13,11 @@
 #   --nav       then go straight into AMCL + Nav2 on the clean map (set goals in RViz: "Nav2 Goal").
 #               With maps/<area>_tags.yaml, the camera sets AMCL's pose when it has none or is lost.
 #   --nav-only  no mapping: AMCL + Nav2 on the SAVED maps/<area>_clean.yaml (run/nav.sh <area>)
-#   --continue  don't start fresh: reload maps/<area>.posegraph and EXTEND the map. Put the robot on
-#               the ORIGINAL mapping start spot (facing the original way) first, then drive only the
-#               areas that need improving. Saving replaces maps/<area> (old files go to maps/.prev).
+#   --continue  don't start fresh: reload maps/<area>.posegraph and EXTEND the map, then drive only
+#               the areas that need improving. Saving replaces maps/<area> (old files go to maps/.prev).
+#               The robot starts on the ORIGINAL mapping start spot, unless you give
+#   --start=X,Y,YAW_DEG  where it stands on that map instead (rough is fine: it's refined by fitting
+#               the live scan to the saved map). Read X,Y,YAW off the dashboard POSE while navigating.
 #   --no-camera mapping/navigation without the camera and tags
 #   --sim       no hardware: nodes/sim_robot.py fakes the lidar and ESP32 (for testing; no camera)
 #   --no-rviz   don't open RViz (e.g. over plain SSH)
@@ -28,18 +30,19 @@ set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$PROJECT_DIR"
 
-AREA="" NAV=0 NAV_ONLY=0 CAMERA=1 SIM=0 RVIZ=1 YES=0 CONT=0 PREP_ONLY=0
+AREA="" NAV=0 NAV_ONLY=0 CAMERA=1 SIM=0 RVIZ=1 YES=0 CONT=0 PREP_ONLY=0 START=""
 for a in "$@"; do
   case "$a" in
     --nav) NAV=1 ;; --nav-only) NAV=1 NAV_ONLY=1 ;; --no-camera) CAMERA=0 ;; --continue) CONT=1 ;;
     --prepare-only) PREP_ONLY=1 ;;
     --sim) SIM=1 ;; --no-rviz) RVIZ=0 ;; --yes|-y) YES=1 ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    --start=*) START="${a#--start=}" ;;
     -*) echo "Unknown option $a (see --help)" >&2; exit 2 ;;
     *) [[ -z "$AREA" ]] || { echo "Only one area name, please" >&2; exit 2; }; AREA="$a" ;;
   esac
 done
-[[ -n "$AREA" ]] || { sed -n '2,26p' "$0"; exit 2; }
+[[ -n "$AREA" ]] || { sed -n '2,30p' "$0"; exit 2; }
 [[ "$AREA" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Area name: letters, digits, _ and - only" >&2; exit 2; }
 if (( RVIZ )) && ! use_robot_screen; then RVIZ=0; fi
 MAP="$PROJECT_DIR/maps/$AREA"
@@ -164,15 +167,45 @@ stop_bg nav; stop_bg slam   # a fresh map every run (unless --continue)
 SLAM_PARAMS="$PROJECT_DIR/config/slam_toolbox.yaml"
 if (( CONT )); then
   [[ -f "$PROJECT_DIR/maps/$AREA.posegraph" ]] || { err "no maps/$AREA.posegraph to continue from"; exit 1; }
-  info "CONTINUING maps/$AREA: the robot must be ON the original mapping start spot, facing the"
-  info "original direction (the map's 0,0 — where the first run began)."
-  ask "Is it there now? [y/N]" n || { info "Place it first, then re-run."; exit 1; }
+  SX=0 SY=0 SYAW=0
+  if [[ -n "$START" ]]; then
+    IFS=, read -r GX GY GYAW <<<"$START"
+    GYAW="${GYAW:-}"
+    if [[ -z "$GYAW" ]]; then
+      info "no heading given: searching all directions around ($GX, $GY)"
+      FITARGS=("$GX" "$GY" 0 --radius 1.0 --angle 180)
+    else
+      FITARGS=("$GX" "$GY" "$GYAW" --radius 1.0 --angle 30)
+    fi
+    info "refining the start by fitting the live scan to maps/${AREA}_clean ..."
+    if fit="$(python3 tools/fit_pose.py "${FITARGS[@]}" --map-file "$PROJECT_DIR/maps/${AREA}_clean.yaml" 2>/dev/null)"; then
+      read -r FX FY FYAW SCORE <<<"$fit"
+      PCT="$(python3 -c "print(round(100*$SCORE))")"
+      if (( PCT >= 60 )); then
+        SX="$FX" SY="$FY" SYAW="$FYAW"
+        ok "start = ($FX, $FY, $(python3 -c "import math; print(round(math.degrees($FYAW)))")°), $PCT% of the scan on map walls"
+      elif [[ -n "$GYAW" ]]; then
+        warn "weak fit ($PCT%): using your numbers as given"
+        SX="$GX" SY="$GY" SYAW="$(python3 -c "import math; print(math.radians($GYAW))")"
+      else
+        err "weak fit ($PCT%) and no heading given: re-run with --start=X,Y,YAW_DEG"; exit 1
+      fi
+    else
+      err "scan fit failed (lidar up?)"; exit 1
+    fi
+    ask "Use that start? [y/N]" n || exit 1
+  else
+    info "CONTINUING maps/$AREA from the ORIGINAL mapping start spot (the map's 0,0, facing the original"
+    info "direction). Starting elsewhere? Re-run with --start=X,Y[,YAW_DEG]."
+    ask "Is the robot there now? [y/N]" n || { info "Place it first, then re-run."; exit 1; }
+  fi
   SLAM_PARAMS="$RUN_DIR/slam_continue.yaml"
-  python3 - "$PROJECT_DIR/config/slam_toolbox.yaml" "$PROJECT_DIR/maps/$AREA" "$SLAM_PARAMS" <<'PY'
+  python3 - "$PROJECT_DIR/config/slam_toolbox.yaml" "$PROJECT_DIR/maps/$AREA" "$SLAM_PARAMS" "$SX" "$SY" "$SYAW" <<'PY'
 import sys, yaml
 cfg = yaml.safe_load(open(sys.argv[1]))
 node = next(iter(cfg))
-cfg[node]['ros__parameters'].update({'map_file_name': sys.argv[2], 'map_start_pose': [0.0, 0.0, 0.0]})
+cfg[node]['ros__parameters'].update({'map_file_name': sys.argv[2],
+                                     'map_start_pose': [float(sys.argv[4]), float(sys.argv[5]), float(sys.argv[6])]})
 yaml.safe_dump(cfg, open(sys.argv[3], 'w'))
 PY
   ok "slam_toolbox will reload the saved pose graph and extend it"

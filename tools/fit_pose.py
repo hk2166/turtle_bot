@@ -11,6 +11,7 @@ Needs the map (/map from the map server, latched) and /scan_filtered, i.e. navig
 """
 import argparse
 import math
+import os
 import sys
 import time
 
@@ -31,6 +32,8 @@ def main():
     ap.add_argument('--radius', type=float, default=1.0)
     ap.add_argument('--angle', type=float, default=30.0)
     ap.add_argument('--scan', default='/scan_filtered')
+    ap.add_argument('--map-file', help='fit against a saved map yaml instead of the live /map '
+                                       '(no navigation needed, e.g. before remap.sh --continue)')
     a = ap.parse_args()
     if len(a.guess) not in (0, 3):
         sys.exit('give X Y YAW_DEG, or nothing')
@@ -46,6 +49,15 @@ def main():
     node.create_subscription(LaserScan, a.scan, scans.append, qos_profile_sensor_data)
     T_bl = None
     end = time.monotonic() + 10
+    if a.map_file:
+        import yaml
+        meta = yaml.safe_load(open(a.map_file))
+        pgm = os.path.join(os.path.dirname(os.path.abspath(a.map_file)), meta['image'])
+        img = cv2.imread(pgm, -1)
+        if img is None:
+            sys.exit(f'cannot read {pgm}')
+        maps.append(('file', np.where(img == 0, 100, np.where(img == 254, 0, -1))[::-1].astype(np.int8),
+                     float(meta['resolution']), float(meta['origin'][0]), float(meta['origin'][1])))
     while time.monotonic() < end and (not maps or not scans or T_bl is None):
         rclpy.spin_once(node, timeout_sec=0.1)
         if scans and T_bl is None:
@@ -62,9 +74,13 @@ def main():
 
     # the map as a "distance to the nearest wall" image
     m = maps[-1]
-    w, h, res = m.info.width, m.info.height, m.info.resolution
-    ox, oy = m.info.origin.position.x, m.info.origin.position.y
-    grid = np.asarray(m.data, np.int8).reshape(h, w)
+    if isinstance(m, tuple):
+        _, grid, res, ox, oy = m
+        h, w = grid.shape
+    else:
+        w, h, res = m.info.width, m.info.height, m.info.resolution
+        ox, oy = m.info.origin.position.x, m.info.origin.position.y
+        grid = np.asarray(m.data, np.int8).reshape(h, w)
     dist = cv2.distanceTransform(np.where(grid >= 65, 0, 1).astype(np.uint8), cv2.DIST_L2, 3) * res
 
     # the scan in the robot's frame
