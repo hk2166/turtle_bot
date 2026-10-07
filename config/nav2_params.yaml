@@ -5,11 +5,13 @@
 # Tuned 2026-10-06 after the first clean runs: 0.55 m/s cruise. Hard limits stay: accel ≤ 0.5 m/s².
 amcl:
   ros__parameters:
-    alpha1: 0.2
-    alpha2: 0.2
-    alpha3: 0.2
-    alpha4: 0.2
-    alpha5: 0.2
+    # odometry is calibrated to ~1% (2026-10-07): trust it — tight alphas stop the particle cloud
+    # spreading onto the identical neighbouring desk rows (sudden pose jumps)
+    alpha1: 0.08
+    alpha2: 0.08
+    alpha3: 0.08
+    alpha4: 0.08
+    alpha5: 0.08
     base_frame_id: "base_link"
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -29,7 +31,7 @@ amcl:
     pf_z: 0.99
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
-    resample_interval: 1
+    resample_interval: 2                   # keep hypothesis diversity; fewer premature lock-ins
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
     save_pose_rate: 0.5
     sigma_hit: 0.2
@@ -37,9 +39,9 @@ amcl:
     transform_tolerance: 1.0
     update_min_a: 0.2
     update_min_d: 0.25
-    z_hit: 0.5
+    z_hit: 0.6
     z_max: 0.05
-    z_rand: 0.5
+    z_rand: 0.35
     z_short: 0.05
     scan_topic: scan_filtered
 
