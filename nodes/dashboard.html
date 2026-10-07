@@ -85,13 +85,13 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 </div>
 <div class="grid" id="view-mission">
  <div class="panel">
-  <h2>TACTICAL MAP — click: goal · shift-click ×2: set pose · wheel/pinch: zoom · drag: pan · dbl-click: reset</h2>
+  <h2>TACTICAL MAP — click: goal · SET POSE (or shift): press+drag arrow = robot pose · wheel/pinch zoom · drag pan</h2>
   <div id="mapwrap"><canvas id="map"></canvas></div>
   <div class="row">
    <button id="stop">■ STOP</button>
    <button onclick="goHome()" title="drive to the home spot (default: nearest open spot to where mapping started)">⌂ HOME</button>
    <button onclick="setHome()" title="save the robot's current spot as home for this map">⌂ SET HOME</button>
-   <button id="setpose" onclick="armPoseBtn()" title="then tap the robot's spot, then tap where it faces">✛ SET POSE</button>
+   <button id="setpose" onclick="armPoseBtn()" title="then press at the robot's spot and DRAG toward where it faces">✛ SET POSE</button>
    <button onclick="fit('here')" title="re-fit the scan around where the robot believes it is">⟳ REFRESH POSE</button>
    <button onclick="fit('start')" title="robot is near the mapping start">⌖ RESET POSE</button>
    <button onclick="fit('wide')" title="robot could be anywhere within a few metres of the start">⌖ FIT WIDE</button>
@@ -178,7 +178,7 @@ function fitCanvas(){const w=document.getElementById('mapwrap');if(!cv.width||!w
 window.addEventListener('resize',fitCanvas);
 const img=new Image(); img.id='mapimg'; img.src='/map.png';
 img.onload=()=>{cv.width=img.width;cv.height=img.height;fitCanvas();draw()};
-let M=null,S={},poseClick=null,feedOn=true,armPose=false,fenceMode=false,fencePts=[];
+let M=null,S={},poseDrag=null,feedOn=true,armPose=false,fenceMode=false,fencePts=[];
 function fenceBtn(){fenceMode=!fenceMode;fencePts=[];
  document.getElementById('fenceb').classList.toggle('armed',fenceMode);
  document.getElementById('fencesave').style.display=fenceMode?'':'none';
@@ -193,9 +193,9 @@ async function fenceSave(){
  document.getElementById('fencesave').style.display='none';
  document.getElementById('fencecancel').style.display='none';
  document.getElementById('mapimg').src='/map.png?'+Date.now()}
-function armPoseBtn(){armPose=!armPose;poseClick=null;
+function armPoseBtn(){armPose=!armPose;poseDrag=null;
  document.getElementById('setpose').classList.toggle('armed',armPose);
- if(armPose)log('SET POSE: tap the robot\'s spot on the map, then tap where it faces')}
+ if(armPose)log('SET POSE: press at the robot\'s spot, DRAG toward where it faces, release');draw()}
 function w2p(x,y){const A=M.A;return[A[0][0]*x+A[0][1]*y+A[0][2], A[1][0]*x+A[1][1]*y+A[1][2]]}
 // view transform: zoom (wheel / pinch) + pan (drag). Z.s=1 shows the whole map.
 let Z={s:1,tx:0,ty:0};
@@ -214,10 +214,14 @@ cv.addEventListener('dblclick',()=>{Z={s:1,tx:0,ty:0};draw()});
 let ptrs=new Map(),panStart=null,moved=0,pinch0=null;
 cv.style.touchAction='none';
 cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);
+ if((armPose||e.shiftKey)&&!fenceMode&&M){const r=cv.getBoundingClientRect();
+  const w=p2w(e.clientX-r.left,e.clientY-r.top);poseDrag={a:w,b:w};draw();return}
  ptrs.set(e.pointerId,[e.clientX,e.clientY]);moved=0;
  if(ptrs.size==1)panStart={x:e.clientX,y:e.clientY,tx:Z.tx,ty:Z.ty};
  if(ptrs.size==2){const a=[...ptrs.values()];pinch0={d:Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]),s:Z.s}}});
 cv.addEventListener('pointermove',e=>{
+ if(poseDrag){const r=cv.getBoundingClientRect();
+  poseDrag.b=p2w(e.clientX-r.left,e.clientY-r.top);draw();return}
  if(!ptrs.has(e.pointerId))return;
  ptrs.set(e.pointerId,[e.clientX,e.clientY]);
  if(ptrs.size==2&&pinch0){const a=[...ptrs.values()];
@@ -226,7 +230,14 @@ cv.addEventListener('pointermove',e=>{
  if(panStart){const dx=e.clientX-panStart.x,dy=e.clientY-panStart.y;moved=Math.max(moved,Math.hypot(dx,dy));
   if(moved>6){const r=cv.getBoundingClientRect();
    Z.tx=panStart.tx+dx*cv.width/r.width;Z.ty=panStart.ty+dy*cv.height/r.height;clampZ();draw()}}});
-cv.addEventListener('pointerup',e=>{
+cv.addEventListener('pointerup',async e=>{
+ if(poseDrag){const d=poseDrag;poseDrag=null;armPose=false;
+  document.getElementById('setpose').classList.remove('armed');
+  const dx=d.b[0]-d.a[0],dy=d.b[1]-d.a[1];
+  let yaw=Math.atan2(dy,dx);
+  if(Math.hypot(dx,dy)<0.15){yaw=S.pose?S.pose[2]:0;log('short drag: kept the current facing')}
+  await post('/api/pose',{x:d.a[0],y:d.a[1],yaw});
+  log(`pose set ${d.a[0].toFixed(2)}, ${d.a[1].toFixed(2)} @ ${(yaw*57.3).toFixed(0)}°`);draw();return}
  const wasTap=moved<=6&&ptrs.size==1;
  ptrs.delete(e.pointerId);if(ptrs.size<2)pinch0=null;if(ptrs.size==0)panStart=null;
  if(wasTap)handleTap(e)});
@@ -249,7 +260,12 @@ function draw(){
         hy=M.A[1][0]*Math.cos(S.pose[2])+M.A[1][1]*Math.sin(S.pose[2]);
   cx.save();cx.translate(a,b);cx.rotate(Math.atan2(hy,hx));cx.scale(L,L);cx.fillStyle='#8cff9e';cx.shadowColor='#49f07a';
   cx.shadowBlur=10;cx.beginPath();cx.moveTo(9,0);cx.lineTo(-6,5);cx.lineTo(-6,-5);cx.closePath();cx.fill();cx.restore()}
- if(poseClick){const[a,b]=w2p(poseClick[0],poseClick[1]);cx.strokeStyle='#ffb347';cx.lineWidth=2*L;cx.strokeRect(a-5*L,b-5*L,10*L,10*L)}
+ if(poseDrag){const[a,b]=w2p(poseDrag.a[0],poseDrag.a[1]),[c2,d2]=w2p(poseDrag.b[0],poseDrag.b[1]);
+  cx.strokeStyle='#ffb347';cx.lineWidth=2.5*L;cx.beginPath();cx.moveTo(a,b);cx.lineTo(c2,d2);cx.stroke();
+  const an=Math.atan2(d2-b,c2-a);
+  cx.beginPath();cx.moveTo(c2,d2);cx.lineTo(c2-10*L*Math.cos(an-0.5),d2-10*L*Math.sin(an-0.5));
+  cx.moveTo(c2,d2);cx.lineTo(c2-10*L*Math.cos(an+0.5),d2-10*L*Math.sin(an+0.5));cx.stroke();
+  cx.strokeRect(a-4*L,b-4*L,8*L,8*L)}
  if(S.fence&&S.fence.length){cx.strokeStyle='#ff5566';cx.lineWidth=2*L;
   S.fence.forEach(sg=>{const[a,b]=w2p(sg[0],sg[1]),[c,d]=w2p(sg[2],sg[3]);
    cx.beginPath();cx.moveTo(a,b);cx.lineTo(c,d);cx.stroke()})}
@@ -261,13 +277,6 @@ async function handleTap(e){
  if(!M)return;
  const r=cv.getBoundingClientRect();const[x,y]=p2w(e.clientX-r.left,e.clientY-r.top);
  if(fenceMode){fencePts.push([x,y]);draw();return}
- if(e.shiftKey||armPose){if(!poseClick){poseClick=[x,y];armPose=false;
-  document.getElementById('setpose').classList.remove('armed');
-  log('pose: now tap where the robot FACES');draw();return}}
- if(poseClick){const yaw=Math.atan2(y-poseClick[1],x-poseClick[0]);
-  await post('/api/pose',{x:poseClick[0],y:poseClick[1],yaw});
-  log(`pose set ${poseClick[0].toFixed(2)}, ${poseClick[1].toFixed(2)} @ ${(yaw*57.3).toFixed(0)}°`);
-  poseClick=null;return}
  await post('/api/goal',{x,y});log(`goal → ${x.toFixed(2)}, ${y.toFixed(2)}`)}
 
 document.getElementById('stop').onclick=async()=>{await post('/api/stop',{});log('STOP sent')};
