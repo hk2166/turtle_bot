@@ -1,0 +1,59 @@
+# Written by tools/calibrate_camera.py: Brio 100 intrinsics (MJPG stream).
+image_width: 1280
+image_height: 720
+camera_name: brio100
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1317.3999623912189
+  - 0.0
+  - 639.1488289423575
+  - 0.0
+  - 1318.7068145319047
+  - 329.24144682051013
+  - 0.0
+  - 0.0
+  - 1.0
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 1
+  data:
+  - 0.10503476242999737
+  - -0.6748222735993011
+  - 0.003932561115600068
+  - -0.0030889949100241466
+  - 4.112415572323327
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1.0
+  - 0
+  - 0
+  - 0
+  - 1.0
+  - 0
+  - 0
+  - 0
+  - 1.0
+projection_matrix:
+  rows: 3
+  cols: 4
+  data:
+  - 1317.3999623912189
+  - 0.0
+  - 639.1488289423575
+  - 0.0
+  - 0.0
+  - 1318.7068145319047
+  - 329.24144682051013
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+calibration:
+  rms_px: 0.206
+  views: 25
