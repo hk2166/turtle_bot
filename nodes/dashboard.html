@@ -23,7 +23,7 @@ h1 .blink{animation:bl 1.2s steps(2) infinite}@keyframes bl{to{opacity:0}}
 .panel h2{flex:none;font-size:11px;color:var(--dim);letter-spacing:2px;border-bottom:1px dashed var(--line);
   padding-bottom:5px;margin-bottom:6px}
 #mapwrap{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
-#map{max-width:100%;max-height:100%;image-rendering:pixelated;border:1px solid var(--line);cursor:crosshair}
+#map{image-rendering:pixelated;border:1px solid var(--line);cursor:crosshair}
 #camwrap{flex:none;aspect-ratio:16/9;max-height:46%;display:flex;align-items:center;justify-content:center;
   background:#000;border:1px solid var(--line)}
 #cam{max-width:100%;max-height:100%}
@@ -139,7 +139,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 </div>
 <script>
 let view='mission';
-async function setView(v,btn){view=v;
+async async function setView(v,btn){view=v;setTimeout(fitCanvas,50);view=v;
  document.getElementById('view-mission').style.display=v=='mission'?'grid':'none';
  document.getElementById('view-manual').style.display=v=='manual'?'grid':'none';
  document.querySelectorAll('.vtab').forEach(b=>b.classList.remove('on'));
@@ -167,8 +167,13 @@ window.addEventListener('load',()=>{
  document.getElementById('padstop').addEventListener('pointerdown',()=>{held={f:0,b:0,l:0,r:0};post('/api/stop',{})});
 });
 const cv=document.getElementById('map'),cx=cv.getContext('2d');
+// scale the canvas (up or down) to fill the map pane, keeping the map's aspect ratio
+function fitCanvas(){const w=document.getElementById('mapwrap');if(!cv.width||!w)return;
+ const k=Math.min(w.clientWidth/cv.width, w.clientHeight/cv.height);
+ if(k>0&&isFinite(k)){cv.style.width=Math.floor(cv.width*k-2)+'px';cv.style.height=Math.floor(cv.height*k-2)+'px'}}
+window.addEventListener('resize',fitCanvas);
 const img=new Image(); img.id='mapimg'; img.src='/map.png';
-img.onload=()=>{cv.width=img.width;cv.height=img.height;draw()};
+img.onload=()=>{cv.width=img.width;cv.height=img.height;fitCanvas();draw()};
 let M=null,S={},poseClick=null,feedOn=true,armPose=false,fenceMode=false,fencePts=[];
 function fenceBtn(){fenceMode=!fenceMode;fencePts=[];
  document.getElementById('fenceb').classList.toggle('armed',fenceMode);
@@ -312,7 +317,7 @@ setInterval(async()=>{try{
  if(mapping!=mapMode){mapMode=mapping;
   if(mapping){setView('manual',document.querySelectorAll('.vtab')[1]);log('mapping: drive with the pad; map view on MISSION tab grows live')}}
  if(mapping&&Date.now()-(window._mt||0)>2500){window._mt=Date.now();
-  const im=new Image();im.onload=()=>{img.src=im.src;cv.width=im.width;cv.height=im.height;draw()};
+  const im=new Image();im.onload=()=>{img.src=im.src;cv.width=im.width;cv.height=im.height;fitCanvas();draw()};
   im.src='/map.png?'+Date.now()}
  draw();
 }catch(e){document.getElementById('nav').textContent='PANEL OFFLINE?'}},700);
