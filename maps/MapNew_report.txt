@@ -1,0 +1,9 @@
+Map MapNew  (426×364 cells at 0.05 m = 21.3 × 18.2 m)
+  mapped extent      21.2 × 18.2 m
+  free floor         116.6 m²
+  occupied cells     4225
+  specks removed     140  (≤ 6 cells, not near unknown)
+  holes filled       594  (≤ 40 cells, enclosed)
+  spray removed      0.9 m² of unreachable "free" (glass bleed)
+  NOTE: statistics only. The original grading metric has not been recovered.
+  Check by eye: walls single and straight, glass room reads as a wall, loop closed with no doubling.
