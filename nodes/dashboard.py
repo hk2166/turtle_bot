@@ -26,7 +26,7 @@ sys_path_added = True
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
-from nav_msgs.msg import Path
+from nav_msgs.msg import OccupancyGrid, Path
 from nav2_msgs.srv import LoadMap
 from action_msgs.msg import GoalStatus, GoalStatusArray
 from rclpy.duration import Duration
@@ -59,6 +59,10 @@ class Ros(Node):
         self.goal = None
         self.create_subscription(Path, '/plan', self.on_plan, 10)
         self.load_map_cli = self.create_client(LoadMap, '/map_server/load_map')
+        from rclpy.qos import DurabilityPolicy as DP, QoSProfile as QP
+        self.grid = None
+        self.create_subscription(OccupancyGrid, '/map', lambda m: setattr(self, 'grid', m),
+                                 QP(depth=1, durability=DP.TRANSIENT_LOCAL))
         self.create_subscription(GoalStatusArray, '/navigate_to_pose/_action/status', self.on_status, 10)
 
     def on_plan(self, msg):
@@ -173,6 +177,8 @@ class State:
         self.t = 0.0
         self.lock = threading.Lock()
         self.fit_msg = ''
+        self.job = ''
+        self.busy = False
 
     def slow(self):
         with self.lock:
@@ -201,9 +207,39 @@ class State:
             return out
 
 
+def pid_alive(name):
+    try:
+        pid = int(open(os.path.expanduser(f'~/.campus_bot/run/{name}.pid')).read().strip())
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def list_maps():
+    import glob
+    return sorted(os.path.basename(p)[:-len('_clean.yaml')]
+                  for p in glob.glob(os.path.join(PROJECT, 'maps', '*_clean.yaml')))
+
+
+def render_grid(grid):
+    """Live /map (while mapping) in the same green theme as the static map."""
+    a = np.asarray(grid.data, np.int16).reshape(grid.info.height, grid.info.width)[::-1]
+    v = np.full((*a.shape, 3), 14, np.uint8)
+    v[(a >= 0) & (a < 50)] = (24, 34, 24)
+    v[a >= 50] = (120, 255, 120)
+    ok, png = cv2.imencode('.png', v)
+    return png.tobytes(), {'resolution': grid.info.resolution,
+                           'origin': [grid.info.origin.position.x, grid.info.origin.position.y]}, a.shape
+
+
 def load_map():
     fenced = os.path.join(PROJECT, 'maps', f'{AREA}_fenced.yaml')
     base = fenced if os.path.exists(fenced) else os.path.join(PROJECT, 'maps', f'{AREA}_clean.yaml')
+    if not os.path.exists(base):   # brand-new map being created: nothing saved yet
+        blank = np.full((200, 200, 3), 14, np.uint8)
+        okb, png = cv2.imencode('.png', blank)
+        return png.tobytes(), {'resolution': 0.05, 'origin': [-5.0, -5.0]}, (200, 200)
     meta = yaml.safe_load(open(base))
     img = cv2.imread(os.path.join(PROJECT, 'maps', meta['image']), -1)
     v = np.full((*img.shape, 3), 14, np.uint8)
@@ -241,17 +277,32 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ('/', '/index.html'):
             self.send(200, 'text/html; charset=utf-8', PAGE)
-        elif self.path == '/map.png':
-            self.send(200, 'image/png', MAP_PNG)
+        elif self.path.startswith('/map.png'):
+            if pid_alive('slam') and self.ros.grid is not None:
+                png, _, _ = render_grid(self.ros.grid)
+                self.send(200, 'image/png', png)
+            else:
+                self.send(200, 'image/png', MAP_PNG)
         elif self.path == '/api/state':
             s = self.state.slow()
             res = MAP_META['resolution']
             o = MAP_META['origin']
+            mapping = pid_alive('slam')
+            if mapping and self.ros.grid is not None:
+                _, m_meta, m_shape = render_grid(self.ros.grid)
+                res, o = m_meta['resolution'], {'0': m_meta['origin'][0], '1': m_meta['origin'][1]}
+                o = m_meta['origin']
+                shape = m_shape
+            else:
+                res, o, shape = MAP_META['resolution'], MAP_META['origin'], MAP_SHAPE
             d = {'pose': self.ros.pose(), 'plan': self.ros.plan, 'goal': self.ros.goal,
-                 'nav': self.ros.nav_state if s['nav_up'] else 'NAV DOWN (run/nav.sh office)',
+                 'mode': 'MAPPING' if mapping else ('NAV' if s['nav_up'] else 'DOWN'),
+                 'maps': list_maps(), 'current': AREA, 'job': self.state.job,
+                 'nav': ('MAPPING %s — drive in MANUAL, then SAVE MAP' % AREA) if mapping
+                        else (self.ros.nav_state if s['nav_up'] else 'NAV DOWN (pick a map → NAVIGATE)'),
                  'fit': self.state.fit_msg, 'fence': __import__('fence_map').load_fence(AREA),
                  'map': {'res': res, 'ox': o[0], 'oy': o[1],
-                         'h': MAP_SHAPE[0], 'w': MAP_SHAPE[1]}, **s}
+                         'h': shape[0], 'w': shape[1]}, **s}
             self.send(200, 'application/json', json.dumps(d).encode())
         elif self.path.startswith('/api/logs'):
             name = (self.path.split('f=')[1].split('&')[0] if 'f=' in self.path else 'nav')
@@ -305,6 +356,83 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, 'application/json', b'{"ok":true}')
         elif self.path == '/api/pose':
             self.ros.send_pose(body['x'], body['y'], body.get('yaw', 0.0))
+            self.send(200, 'application/json', b'{"ok":true}')
+        elif self.path == '/api/use_map':
+            name = body.get('name', '')
+            if name not in list_maps():
+                self.send(400, 'application/json', b'{"ok":false}')
+                return
+            if self.state.busy:
+                self.send(200, 'application/json', b'{"ok":false}')
+                return
+
+            def run():
+                global AREA
+                self.state.busy = True
+                try:
+                    self.state.job = f'switching to map {name}: stopping the stack ...'
+                    subprocess.run(['bash', os.path.join(PROJECT, 'run', 'stop.sh'), '--keep-dashboard'],
+                                   capture_output=True, timeout=120)
+                    AREA = name
+                    refresh_map()
+                    self.state.job = f'starting navigation on {name} (takes ~1 min) ...'
+                    subprocess.Popen(['setsid', 'bash', os.path.join(PROJECT, 'run', 'nav.sh'),
+                                      name, '--no-camera', '--yes'],
+                                     stdout=open(os.path.expanduser('~/.campus_bot/logs/nav_run.log'), 'w'),
+                                     stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                     start_new_session=True)
+                    for _ in range(40):
+                        time.sleep(3)
+                        if pid_alive('nav'):
+                            break
+                    self.state.job = f'navigation on {name}: set the pose (REFRESH / RESET / shift-click), then click goals'
+                finally:
+                    self.state.busy = False
+            threading.Thread(target=run, daemon=True).start()
+            self.send(200, 'application/json', b'{"ok":true}')
+        elif self.path == '/api/map_start':
+            name = body.get('name', '')
+            import re as _re
+            if not _re.fullmatch(r'[A-Za-z0-9_-]{1,40}', name) or self.state.busy:
+                self.send(400, 'application/json', b'{"ok":false}')
+                return
+
+            def run():
+                global AREA
+                self.state.busy = True
+                try:
+                    self.state.job = f'creating map {name}: stopping navigation, starting SLAM ...'
+                    r = subprocess.run(['bash', os.path.join(PROJECT, 'run', 'map_ctl.sh'), 'start', name],
+                                       capture_output=True, text=True, timeout=300)
+                    if r.returncode == 0:
+                        AREA = name
+                        refresh_map()
+                        self.state.job = f'MAPPING {name}: drive with the MANUAL tab, watch the map grow, then SAVE MAP'
+                    else:
+                        tail = (r.stdout + r.stderr).strip().splitlines()[-2:]
+                        self.state.job = 'map start failed: ' + ' / '.join(t.strip() for t in tail)[:110]
+                finally:
+                    self.state.busy = False
+            threading.Thread(target=run, daemon=True).start()
+            self.send(200, 'application/json', b'{"ok":true}')
+        elif self.path == '/api/map_save':
+            def run():
+                self.state.busy = True
+                try:
+                    self.state.job = f'saving map {AREA} ...'
+                    r = subprocess.run(['bash', os.path.join(PROJECT, 'run', 'map_ctl.sh'), 'save', AREA],
+                                       capture_output=True, text=True, timeout=180)
+                    refresh_map()
+                    self.state.job = (f'map {AREA} saved — pick it in the list and NAVIGATE'
+                                      if r.returncode == 0 else 'save failed: see dashboard.log')
+                finally:
+                    self.state.busy = False
+            threading.Thread(target=run, daemon=True).start()
+            self.send(200, 'application/json', b'{"ok":true}')
+        elif self.path == '/api/map_discard':
+            subprocess.run(['bash', os.path.join(PROJECT, 'run', 'map_ctl.sh'), 'discard'],
+                           capture_output=True, timeout=60)
+            self.state.job = 'mapping discarded'
             self.send(200, 'application/json', b'{"ok":true}')
         elif self.path == '/api/fence':
             import fence_map

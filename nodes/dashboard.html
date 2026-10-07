@@ -43,6 +43,8 @@ button.vtab{font-size:12px;padding:5px 12px;margin-left:10px;vertical-align:midd
 #log{flex:1;min-height:0;overflow-y:auto;font-size:11px;color:var(--dim);white-space:pre-wrap;margin-top:6px}
 .ok{color:var(--fg)}.bad{color:var(--bad)}
 small{color:var(--dim);font-size:11px}
+select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inherit;font-size:11px;
+  padding:3px 6px;border-radius:4px}
 #setpose.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
 #fenceb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 /* phones and small tablets: stack and let the PAGE scroll; touch-sized controls */
@@ -68,6 +70,13 @@ small{color:var(--dim);font-size:11px}
  <button class="tab vtab" onclick="setView('manual',this)">MANUAL DRIVE</button>
 </h1>
 <div id="bar">
+ <span><b>MAP</b>
+  <select id="mapsel" onchange="void 0"></select>
+  <button class="tab" onclick="useMap()">▶ NAVIGATE</button>
+  <button class="tab" onclick="createMap()">+ CREATE MAP</button>
+  <button class="tab" id="savemapb" style="display:none" onclick="saveMap()">💾 SAVE MAP</button>
+  <button class="tab" id="discmapb" style="display:none" onclick="discardMap()">✕ DISCARD</button>
+ </span>
  <span><b>NAV</b><span id="nav">…</span></span>
  <span><b>POSE</b><span id="pose">…</span></span>
  <span><b>PWR</b><span id="power">…</span></span>
@@ -235,7 +244,15 @@ async function pollLogs(){
  if(tab!='events'){try{const r=await fetch('/api/logs?f='+tab);renderLog(await r.text())}catch(e){}}
  setTimeout(pollLogs,2000)}
 pollLogs();
-let lastNav='';
+let lastNav='',lastMaps='';
+async function useMap(){const n=document.getElementById('mapsel').value;
+ if(!n)return; if(!confirm(`Navigate on map "${n}"? This restarts the stack.`))return;
+ await post('/api/use_map',{name:n});log('switching to map '+n)}
+async function createMap(){const n=prompt('Name for the NEW map (letters, digits, - _):');
+ if(!n)return; await post('/api/map_start',{name:n});log('creating map '+n)}
+async function saveMap(){await post('/api/map_save',{});log('saving map')}
+async function discardMap(){if(confirm('Discard this mapping run?')){await post('/api/map_discard',{});log('mapping discarded')}}
+let lastJob='',mapMode=false;
 setInterval(async()=>{try{
  const s=await(await fetch('/api/state')).json();S=s;M=s.map;
  const el=(i,v)=>document.getElementById(i).textContent=v;
@@ -245,6 +262,20 @@ setInterval(async()=>{try{
    s.nav=='DRIVING'?'ok':'';
  document.getElementById('fit').textContent=s.fit||'';
  if(s.nav!=lastNav){log('nav: '+s.nav);lastNav=s.nav}
+ if(s.job&&s.job!=lastJob){log(s.job);lastJob=s.job}
+ document.getElementById('fit').textContent=s.job||s.fit||'';
+ const sel=document.getElementById('mapsel');
+ const mapsNow=JSON.stringify(s.maps||[]);
+ if(mapsNow!=lastMaps&&document.activeElement!=sel){lastMaps=mapsNow;
+  sel.innerHTML=(s.maps||[]).map(m=>`<option${m==s.current?' selected':''}>${m}</option>`).join('')}
+ const mapping=s.mode=='MAPPING';
+ document.getElementById('savemapb').style.display=mapping?'':'none';
+ document.getElementById('discmapb').style.display=mapping?'':'none';
+ if(mapping!=mapMode){mapMode=mapping;
+  if(mapping){setView('manual',document.querySelectorAll('.vtab')[1]);log('mapping: drive with the pad; map view on MISSION tab grows live')}}
+ if(mapping&&Date.now()-(window._mt||0)>2500){window._mt=Date.now();
+  const im=new Image();im.onload=()=>{img.src=im.src;cv.width=im.width;cv.height=im.height;draw()};
+  im.src='/map.png?'+Date.now()}
  draw();
 }catch(e){document.getElementById('nav').textContent='PANEL OFFLINE?'}},700);
 pollCam();

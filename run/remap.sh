@@ -28,10 +28,11 @@ set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$PROJECT_DIR"
 
-AREA="" NAV=0 NAV_ONLY=0 CAMERA=1 SIM=0 RVIZ=1 YES=0 CONT=0
+AREA="" NAV=0 NAV_ONLY=0 CAMERA=1 SIM=0 RVIZ=1 YES=0 CONT=0 PREP_ONLY=0
 for a in "$@"; do
   case "$a" in
     --nav) NAV=1 ;; --nav-only) NAV=1 NAV_ONLY=1 ;; --no-camera) CAMERA=0 ;; --continue) CONT=1 ;;
+    --prepare-only) PREP_ONLY=1 ;;
     --sim) SIM=1 ;; --no-rviz) RVIZ=0 ;; --yes|-y) YES=1 ;;
     -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
     -*) echo "Unknown option $a (see --help)" >&2; exit 2 ;;
@@ -188,6 +189,12 @@ if (( CAM_UP )); then
   start_bg tags python3 nodes/tag_map.py --ros-args -p mode:=record -p tags_file:="$TAGS_REC" \
     -p odom_topic:="$ODOM_TOPIC"
   ok "camera recording AprilTags into the map (log: $LOG_DIR/tags.log)"
+fi
+
+if (( PREP_ONLY )); then
+  ok "prepared: sensors + SLAM are running. Drive (dashboard MANUAL tab), then save:"
+  info "  run/map_ctl.sh save $AREA      (or discard: run/map_ctl.sh discard)"
+  exit 0
 fi
 
 # ------------------------------------------------------------------------------------------------
