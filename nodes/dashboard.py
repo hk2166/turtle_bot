@@ -274,6 +274,34 @@ def dominant_angle(occ_rc):
     return a
 
 
+def home_file(area):
+    return os.path.join(PROJECT, 'config', f'home_{area}.yaml')
+
+
+def get_home(area):
+    """(x, y, yaw, how): the saved home, else the nearest safe open spot to the mapping start (0,0)."""
+    try:
+        h = yaml.safe_load(open(home_file(area))) or {}
+        return float(h['x']), float(h['y']), float(h.get('yaw', 0.0)), 'saved home'
+    except (OSError, KeyError, TypeError, ValueError):
+        pass
+    fenced = os.path.join(PROJECT, 'maps', f'{area}_fenced.yaml')
+    base = fenced if os.path.exists(fenced) else os.path.join(PROJECT, 'maps', f'{area}_clean.yaml')
+    meta = yaml.safe_load(open(base))
+    img = cv2.imread(os.path.join(PROJECT, 'maps', meta['image']), -1)
+    res, ox, oy = float(meta['resolution']), float(meta['origin'][0]), float(meta['origin'][1])
+    H = img.shape[0]
+    blocked = ((img == 0) | (img == 205)).astype(np.uint8)
+    dt = cv2.distanceTransform(1 - blocked, cv2.DIST_L2, 3) * res
+    ys, xs = np.where(dt >= 0.45)          # robot half-diagonal 0.29 m + margin
+    if not len(xs):
+        return 0.0, 0.0, 0.0, 'mapping start (no safe spot found)'
+    wx = ox + (xs + 0.5) * res
+    wy = oy + (H - 1 - ys + 0.5) * res
+    i = int(np.argmin(np.hypot(wx, wy)))
+    return float(wx[i]), float(wy[i]), 0.0, f'nearest open spot to the mapping start ({np.hypot(wx[i], wy[i]):.1f} m from it)'
+
+
 def load_map():
     fenced = os.path.join(PROJECT, 'maps', f'{AREA}_fenced.yaml')
     base = fenced if os.path.exists(fenced) else os.path.join(PROJECT, 'maps', f'{AREA}_clean.yaml')
@@ -371,6 +399,7 @@ class Handler(BaseHTTPRequestHandler):
                  'nav': ('MAPPING %s — drive in MANUAL, then SAVE MAP' % AREA) if mapping
                         else (self.ros.nav_state if s['nav_up'] else 'NAV DOWN (pick a map → NAVIGATE)'),
                  'fit': self.state.fit_msg, 'fence': __import__('fence_map').load_fence(AREA),
+                 'home': list(get_home(AREA)[:3]) if os.path.exists(os.path.join(PROJECT, 'maps', f'{AREA}_clean.yaml')) else None,
                  'map': {'A': A[:2].tolist(), 'Ainv': Ainv[:2].tolist(),
                          'h': shape[0], 'w': shape[1]}, **s}
             self.send(200, 'application/json', json.dumps(d).encode())
@@ -420,6 +449,21 @@ class Handler(BaseHTTPRequestHandler):
             if yaw is None:
                 yaw = math.atan2(body['y'] - p[1], body['x'] - p[0]) if p else 0.0
             self.ros.send_goal(body['x'], body['y'], yaw)
+            self.send(200, 'application/json', b'{"ok":true}')
+        elif self.path == '/api/home':
+            x, y, yaw, how = get_home(AREA)
+            self.ros.send_goal(x, y, yaw)
+            self.state.fit_msg = f'going home: ({x:.2f}, {y:.2f}) — {how}'
+            self.send(200, 'application/json', b'{"ok":true}')
+        elif self.path == '/api/home_set':
+            p = self.ros.pose()
+            if p is None:
+                self.state.fit_msg = 'no robot pose: set the pose first, then SET HOME'
+            else:
+                with open(home_file(AREA), 'w') as f:
+                    f.write(f'# home for maps/{AREA} (dashboard SET HOME); delete to use the mapping start\n')
+                    yaml.safe_dump({'x': round(p[0], 3), 'y': round(p[1], 3), 'yaw': round(p[2], 4)}, f)
+                self.state.fit_msg = f'home saved: ({p[0]:.2f}, {p[1]:.2f}) @ {math.degrees(p[2]):.0f}°'
             self.send(200, 'application/json', b'{"ok":true}')
         elif self.path == '/api/stop':
             self.ros.stop()

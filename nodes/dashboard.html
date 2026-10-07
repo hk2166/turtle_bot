@@ -89,6 +89,8 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
   <div id="mapwrap"><canvas id="map"></canvas></div>
   <div class="row">
    <button id="stop">■ STOP</button>
+   <button onclick="goHome()" title="drive to the home spot (default: nearest open spot to where mapping started)">⌂ HOME</button>
+   <button onclick="setHome()" title="save the robot's current spot as home for this map">⌂ SET HOME</button>
    <button id="setpose" onclick="armPoseBtn()" title="then tap the robot's spot, then tap where it faces">✛ SET POSE</button>
    <button onclick="fit('here')" title="re-fit the scan around where the robot believes it is">⟳ REFRESH POSE</button>
    <button onclick="fit('start')" title="robot is near the mapping start">⌖ RESET POSE</button>
@@ -235,6 +237,9 @@ function draw(){
  if(!M)return;
  if(S.plan&&S.plan.length>1){cx.strokeStyle='#49f07a';cx.lineWidth=1.5*L;cx.beginPath();
   S.plan.forEach((p,i)=>{const[a,b]=w2p(p[0],p[1]);i?cx.lineTo(a,b):cx.moveTo(a,b)});cx.stroke()}
+ if(S.home){const[a,b]=w2p(S.home[0],S.home[1]);cx.strokeStyle='#49f07a';cx.lineWidth=2*L;
+  cx.beginPath();cx.moveTo(a-7*L,b);cx.lineTo(a,b-7*L);cx.lineTo(a+7*L,b);cx.lineTo(a+7*L,b+6*L);
+  cx.lineTo(a-7*L,b+6*L);cx.closePath();cx.stroke()}
  if(S.goal){const[a,b]=w2p(S.goal[0],S.goal[1]);cx.strokeStyle='#ffb347';cx.lineWidth=2*L;
   cx.beginPath();cx.arc(a,b,6*L,0,7);cx.moveTo(a-9*L,b);cx.lineTo(a+9*L,b);cx.moveTo(a,b-9*L);cx.lineTo(a,b+9*L);cx.stroke()}
  if(S.pose){const[a,b]=w2p(S.pose[0],S.pose[1]);
@@ -265,6 +270,8 @@ async function handleTap(e){
 
 document.getElementById('stop').onclick=async()=>{await post('/api/stop',{});log('STOP sent')};
 async function fit(mode){await post('/api/fit',{mode});log('pose fit started ('+mode+')')}
+async function goHome(){await post('/api/home',{});log('going home')}
+async function setHome(){if(confirm('Save the robot\'s current spot as HOME for this map?')){await post('/api/home_set',{});log('home set')}}
 async function post(u,b){return fetch(u,{method:'POST',body:JSON.stringify(b)})}
 function feed(on){feedOn=on;document.getElementById('camoff').style.display=on?'none':'';
  if(!on)document.getElementById('cam').src=''}
