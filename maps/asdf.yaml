@@ -1,0 +1,7 @@
+image: asdf.pgm
+mode: trinary
+resolution: 0.050
+origin: [-25.142, -10.336, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
