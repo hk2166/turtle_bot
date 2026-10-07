@@ -3,13 +3,18 @@
 # recovered. This is a conservative stand-in; replace it if the original turns up.
 """Clean a saved map and report its stats.
 
-    python3 tools/clean_map.py maps/<area>.yaml
+    python3 tools/clean_map.py maps/<area>.yaml [--deep]
 writes maps/<area>_clean.pgm + .yaml and maps/<area>_report.txt.
 
 Cleaning (only small, isolated things are touched; walls are never thinned or moved):
   * occupied specks of ≤ --speck cells with no unknown space around them → free
     (ghosts of legs, chair wheels, lidar noise)
   * enclosed unknown holes of ≤ --hole cells → free (gaps in free space the beams just missed)
+--deep additionally:
+  * bigger speck/hole limits (6 / 40 cells)
+  * keeps only the free floor reachable from the main area through passages wider than ~0.25 m:
+    the "free" spray fanning through glass and door slits becomes unknown. Real doorways
+    (≥ 0.7 m) are far wider than the cut, so rooms are never lost.
 The report is statistics, NOT the original grade (that metric is still unrecovered).
 """
 import argparse
@@ -28,7 +33,11 @@ def main():
     ap.add_argument('map_yaml')
     ap.add_argument('--speck', type=int, default=3, help='max occupied blob (cells) to remove')
     ap.add_argument('--hole', type=int, default=25, help='max enclosed unknown hole (cells) to fill')
+    ap.add_argument('--deep', action='store_true', help='stronger pass: see the header')
     args = ap.parse_args()
+    if args.deep:
+        args.speck = max(args.speck, 6)
+        args.hole = max(args.hole, 40)
 
     with open(args.map_yaml) as f:
         meta = yaml.safe_load(f)
@@ -68,6 +77,27 @@ def main():
                 out[blob] = FREE
                 holes += 1
 
+    sprayed = 0
+    if args.deep:
+        # main-floor extraction: erode free space by ~0.12 m (cuts necks < ~0.25 m), keep the largest
+        # piece, grow it back inside the original free mask. Free cells never reached = spray → unknown.
+        free = (out == FREE).astype(np.uint8)
+        core = cv2.erode(free, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+        ncc, lab, st, _ = cv2.connectedComponentsWithStats(core, connectivity=4)
+        if ncc > 1:
+            main = (lab == (1 + int(np.argmax(st[1:, cv2.CC_STAT_AREA])))).astype(np.uint8)
+            k = np.ones((3, 3), np.uint8)
+            prev = 0
+            while True:
+                main = cv2.dilate(main, k) & free
+                tot = int(main.sum())
+                if tot == prev:
+                    break
+                prev = tot
+            spray = free.astype(bool) & ~main.astype(bool)
+            sprayed = int(spray.sum())
+            out[spray] = UNK
+
     stem = os.path.splitext(os.path.basename(args.map_yaml))[0]
     clean_img = f'{stem}_clean.pgm'
     cv2.imwrite(os.path.join(base_dir, clean_img), out)
@@ -87,6 +117,8 @@ def main():
         f'  occupied cells     {occ_n}',
         f'  specks removed     {specks}  (≤ {args.speck} cells, not near unknown)',
         f'  holes filled       {holes}  (≤ {args.hole} cells, enclosed)',
+        f'  spray removed      {sprayed * cell:.1f} m² of unreachable "free" (glass bleed)' if args.deep else
+        '  (run with --deep to also strip unreachable glass-bleed spray)',
         '  NOTE: statistics only. The original grading metric has not been recovered.',
         '  Check by eye: walls single and straight, glass room reads as a wall, loop closed with no doubling.',
     ]
