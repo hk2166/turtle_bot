@@ -122,7 +122,14 @@ controller_server:
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
-      use_cost_regulated_linear_velocity_scaling: false
+      # Slow down smoothly by costmap cost near furniture instead of driving at full tilt until the
+      # collision check trips: 1100+ "collision ahead" halt-abort-replan cycles on one 9.7 m drive
+      # (2026-10-08). Slower here also means the 1 s collision probe reaches less far, so it stops
+      # flagging sofas it was never going to hit.
+      use_cost_regulated_linear_velocity_scaling: true
+      cost_scaling_dist: 0.5               # = local inflation_radius
+      cost_scaling_gain: 1.0
+      inflation_cost_scaling_factor: 3.0   # = local cost_scaling_factor (must match)
       regulated_linear_scaling_min_radius: 0.7
       regulated_linear_scaling_min_speed: 0.1
       use_fixed_curvature_lookahead: false

@@ -86,6 +86,10 @@ class Ros(Node):
         self.grid = None
         self.create_subscription(OccupancyGrid, '/map', lambda m: setattr(self, 'grid', m),
                                  QP(depth=1, durability=DP.TRANSIENT_LOCAL))
+        self.costmap = None    # the planner's view: static map + live obstacles + inflation
+        self.create_subscription(OccupancyGrid, '/global_costmap/costmap',
+                                 lambda m: setattr(self, 'costmap', m),
+                                 QP(depth=1, durability=DP.TRANSIENT_LOCAL))
         from rclpy.qos import qos_profile_sensor_data
         self.cam_jpg = None
         self.cam_t = 0.0
@@ -344,6 +348,86 @@ def get_home(area):
     return float(wx[i]), float(wy[i]), 0.0, f'nearest open spot to the mapping start ({np.hypot(wx[i], wy[i]):.1f} m from it)'
 
 
+_SNAP = {}   # map path -> (mtime, dt metres, res, ox, oy, H)
+
+
+def snap_reachable(ros, x, y, within=2.5):
+    """Snap (x, y) to the nearest spot the robot can REACH on the planner's live costmap (static map
+    + fence + currently seen obstacles + inflation): the goal always lands in the robot's own pocket
+    of free space, so "no valid path" can only mean the way is truly blocked. None = can't tell
+    (no costmap / no pose yet); (None, None, None) = nothing reachable within `within` m."""
+    m, p = ros.costmap, ros.pose()
+    if m is None or p is None:
+        return None
+    res, ox, oy = m.info.resolution, m.info.origin.position.x, m.info.origin.position.y
+    h, w = m.info.height, m.info.width
+    g = np.asarray(m.data, np.int16).reshape(h, w)      # -1 unknown, 0..98 drivable, 99/100 blocked
+    trav = ((g >= 0) & (g < 99)).astype(np.uint8)       # 99 = too close to a wall for the footprint
+    _, labels = cv2.connectedComponents(trav, connectivity=8)
+    rr, rc = int((p[1] - oy) / res), int((p[0] - ox) / res)
+    if not (0 <= rr < h and 0 <= rc < w):
+        return None
+    if not trav[rr, rc]:                                # scan noise can blot the robot's own cell
+        ys, xs = np.nonzero(trav[max(rr - 16, 0):rr + 17, max(rc - 16, 0):rc + 17])
+        if not len(xs):
+            return None
+        d = (ys + max(rr - 16, 0) - rr) ** 2 + (xs + max(rc - 16, 0) - rc) ** 2
+        i = int(np.argmin(d))
+        rr, rc = ys[i] + max(rr - 16, 0), xs[i] + max(rc - 16, 0)
+    region = labels == labels[rr, rc]
+    gr, gc = int((y - oy) / res), int((x - ox) / res)
+    r = int(within / res)
+    y0, y1 = max(gr - r, 0), min(gr + r + 1, h)
+    x0, x1 = max(gc - r, 0), min(gc + r + 1, w)
+    ys, xs = np.where(region[y0:y1, x0:x1])
+    if not len(xs):
+        return None, None, None
+    d = np.hypot(ys + y0 - gr, xs + x0 - gc) * res
+    score = d + g[ys + y0, xs + x0] * 0.004             # prefer lower cost: don't park against furniture
+    i = int(np.argmin(score))
+    if d[i] > within:
+        return None, None, None
+    nx, ny = ox + (xs[i] + x0 + 0.5) * res, oy + (ys[i] + y0 + 0.5) * res
+    return nx, ny, math.hypot(nx - x, ny - y)
+
+
+def snap_goal(x, y, need=0.35, within=2.0):
+    """(x', y', moved) with x',y' the nearest point to (x, y) that has `need` m of clearance on the
+    served map (fence included), searching `within` m; None when there is no such point (goal in a
+    wall, under a desk, outside the fence or off the map). need 0.35 = half-diagonal 0.29 + margin."""
+    fenced = os.path.join(PROJECT, 'maps', f'{AREA}_fenced.yaml')
+    base = fenced if os.path.exists(fenced) else os.path.join(PROJECT, 'maps', f'{AREA}_clean.yaml')
+    try:
+        mtime = os.path.getmtime(base)
+        if _SNAP.get(base, (None,))[0] != mtime:
+            meta = yaml.safe_load(open(base))
+            img = cv2.imread(os.path.join(PROJECT, 'maps', meta['image']), -1)
+            blocked = ((img == 0) | (img == 205)).astype(np.uint8)
+            dt = cv2.distanceTransform(1 - blocked, cv2.DIST_L2, 3) * float(meta['resolution'])
+            _SNAP.clear()   # one map at a time
+            _SNAP[base] = (mtime, dt, float(meta['resolution']),
+                           float(meta['origin'][0]), float(meta['origin'][1]), img.shape[0])
+    except (OSError, KeyError, TypeError, ValueError):
+        return x, y, 0.0                       # no saved map (live mapping): send as clicked
+    _, dt, res, ox, oy, H = _SNAP[base]
+    cx, cy = int((x - ox) / res), int(H - 1 - (y - oy) / res)
+    if 0 <= cy < dt.shape[0] and 0 <= cx < dt.shape[1] and dt[cy, cx] >= need:
+        return x, y, 0.0
+    r = int(within / res)
+    y0, y1 = max(cy - r, 0), min(cy + r + 1, dt.shape[0])
+    x0, x1 = max(cx - r, 0), min(cx + r + 1, dt.shape[1])
+    ys, xs = np.where(dt[y0:y1, x0:x1] >= need)
+    if not len(xs):
+        return None
+    d2 = (ys + y0 - cy) ** 2 + (xs + x0 - cx) ** 2
+    i = int(np.argmin(d2))
+    if d2[i] > r * r:
+        return None
+    nx = ox + (xs[i] + x0 + 0.5) * res
+    ny = oy + (H - 1 - (ys[i] + y0) + 0.5) * res
+    return nx, ny, math.hypot(nx - x, ny - y)
+
+
 def load_map():
     fenced = os.path.join(PROJECT, 'maps', f'{AREA}_fenced.yaml')
     base = fenced if os.path.exists(fenced) else os.path.join(PROJECT, 'maps', f'{AREA}_clean.yaml')
@@ -489,11 +573,24 @@ class Handler(BaseHTTPRequestHandler):
             self.ros.pub_stop.publish(t)
             self.send(200, 'application/json', b'{"ok":true}')
         elif self.path == '/api/goal':
+            # Snap the click to the nearest spot the robot can actually reach: a click a little
+            # inside a desk, a wall, the fence or a sealed-off pocket used to make Nav2 fail the
+            # goal outright ("no valid path", 2026-10-08). Live costmap first, saved map as fallback.
+            snapped = snap_reachable(self.ros, body['x'], body['y'])
+            if snapped is None:                                   # nav not up yet: static-map snap
+                snapped = snap_goal(body['x'], body['y'])
+            if snapped is None or snapped[0] is None:
+                self.state.fit_msg = 'no reachable open floor within 2.5 m of that click: not sent'
+                self.send(200, 'application/json', b'{"ok":false}')
+                return
+            gx, gy, moved = snapped
             p = self.ros.pose()
             yaw = body.get('yaw')
             if yaw is None:
-                yaw = math.atan2(body['y'] - p[1], body['x'] - p[0]) if p else 0.0
-            self.ros.send_goal(body['x'], body['y'], yaw)
+                yaw = math.atan2(gy - p[1], gx - p[0]) if p else 0.0
+            self.ros.send_goal(gx, gy, yaw)
+            if moved > 0.1:
+                self.state.fit_msg = f'goal nudged {moved:.1f} m onto open floor ({gx:.2f}, {gy:.2f})'
             self.send(200, 'application/json', b'{"ok":true}')
         elif self.path == '/api/home':
             x, y, yaw, how = get_home(AREA)
