@@ -27,6 +27,7 @@ import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Path
+from sensor_msgs.msg import CompressedImage
 from nav2_msgs.srv import LoadMap
 from action_msgs.msg import GoalStatus, GoalStatusArray
 from rclpy.duration import Duration
@@ -84,6 +85,14 @@ class Ros(Node):
         self.grid = None
         self.create_subscription(OccupancyGrid, '/map', lambda m: setattr(self, 'grid', m),
                                  QP(depth=1, durability=DP.TRANSIENT_LOCAL))
+        from rclpy.qos import qos_profile_sensor_data
+        self.cam_jpg = None
+        self.cam_t = 0.0
+
+        def on_img(m):
+            self.cam_jpg = bytes(m.data)
+            self.cam_t = time.time()
+        self.create_subscription(CompressedImage, '/camera/image/compressed', on_img, qos_profile_sensor_data)
         self.create_subscription(GoalStatusArray, '/navigate_to_pose/_action/status', self.on_status, 10)
 
     def on_plan(self, msg):
@@ -445,6 +454,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, 'text/plain; charset=utf-8', '\n'.join(lines).encode())
         elif self.path.startswith('/frame.jpg'):
             jpg, err = self.cam.get()
+            if not jpg and self.ros.cam_jpg and time.time() - self.ros.cam_t < 3.0:
+                jpg = self.ros.cam_jpg          # camera_node owns the device: use its published preview
             if jpg:
                 self.send(200, 'image/jpeg', jpg)
             else:
@@ -514,7 +525,7 @@ class Handler(BaseHTTPRequestHandler):
                     refresh_map()
                     self.state.job = f'starting navigation on {name} (takes ~1 min) ...'
                     subprocess.Popen(['setsid', 'bash', os.path.join(PROJECT, 'run', 'nav.sh'),
-                                      name, '--no-camera', '--yes'],
+                                      name, '--yes'],
                                      stdout=open(os.path.expanduser('~/.campus_bot/logs/nav_run.log'), 'w'),
                                      stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                      start_new_session=True)

@@ -15,7 +15,7 @@ case "${1:-}" in
     AREA="${2:-}"
     [[ "$AREA" =~ ^[A-Za-z0-9_-]+$ ]] || { err "bad map name '$AREA' (letters, digits, _ and -)"; exit 2; }
     run/stop.sh --keep-dashboard
-    exec run/remap.sh "$AREA" --no-camera --no-rviz --yes --prepare-only
+    exec run/remap.sh "$AREA" --no-rviz --yes --prepare-only
     ;;
   save)
     AREA="${2:-}"
