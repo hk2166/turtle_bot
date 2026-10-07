@@ -1,5 +1,6 @@
 # Written 2026-10-08: stock Nav2 bring-up with a lifecycle bond timeout the Pi can live with.
-"""nav2_bringup's bringup_launch.py, unchanged, plus bond_timeout = 10 s for its lifecycle managers.
+"""nav2_bringup's bringup_launch.py, unchanged, plus bond_timeout = 10 s for its lifecycle managers and
+config/navigate_to_pose_patient.xml as the navigate-to-pose behavior tree (12 recovery rounds).
 
 Started by run/remap.sh (navigation). Takes the same arguments as bringup_launch.py:
     ros2 launch launch/nav2.launch.py map:=maps/<area>_clean.yaml params_file:=config/nav2_params.yaml
@@ -19,11 +20,14 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import SetParameter
 
 BOND_TIMEOUT = 10.0   # s; a real hang still stops the robot at once: the ESP32's 300 ms cmd watchdog
+PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BT_XML = os.path.join(PROJECT, 'config', 'navigate_to_pose_patient.xml')
 
 
 def generate_launch_description():
     stock = os.path.join(get_package_share_directory('nav2_bringup'), 'launch', 'bringup_launch.py')
     return LaunchDescription([GroupAction([
         SetParameter(name='bond_timeout', value=BOND_TIMEOUT),
+        SetParameter(name='default_nav_to_pose_bt_xml', value=BT_XML),   # only bt_navigator reads it
         IncludeLaunchDescription(PythonLaunchDescriptionSource(stock)),
     ])])

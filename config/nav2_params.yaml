@@ -59,7 +59,8 @@ bt_navigator:
       plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
     navigate_through_poses:
       plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
-    # 'default_nav_through_poses_bt_xml' and 'default_nav_to_pose_bt_xml' are use defaults:
+    # default_nav_to_pose_bt_xml is set by launch/nav2.launch.py to config/navigate_to_pose_patient.xml
+    # (the stock tree with 12 recovery rounds instead of 6, backing up early). Through-poses uses the default:
     # nav2_bt_navigator/navigate_to_pose_w_replanning_and_recovery.xml
     # nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml
     # They can be set here or via a RewrittenYaml remap from a parent launch file to Nav2.
@@ -79,17 +80,22 @@ controller_server:
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    # "collision ahead" etc.: hold still (zero velocity) and keep receiving the 1 Hz replans for up to 3 s
+    # before calling it a failure. 0.3 s turned every chair/person/corner into a recovery (2026-10-08).
+    failure_tolerance: 3.0
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
     controller_plugins: ["FollowPath"]
     use_realtime_priority: false
 
     # Progress checker parameters
+    # Turning in place counts as progress too: the Simple checker only counted 0.5 m of travel per 10 s,
+    # so a slow, careful turn near furniture (collision monitor easing it) was declared stuck (2026-10-08).
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      plugin: "nav2_controller::PoseProgressChecker"
+      required_movement_radius: 0.3
+      required_movement_angle: 0.35      # rad (20°)
+      movement_time_allowance: 15.0
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"
@@ -204,8 +210,11 @@ global_costmap:
         map_subscribe_transient_local: True
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.50   # tighter squeezes (2026-10-06)
+        # Planner only (nothing is blocked by this; the footprint decides what fits): paths keep up to
+        # 0.65 m from furniture where there's room, so turns happen in the open and the box's corners
+        # (0.29 m out when it spins) clear the desks. Was 3.0 / 0.50 (2026-10-06): paths hugged corners.
+        cost_scaling_factor: 2.5
+        inflation_radius: 0.65
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.
