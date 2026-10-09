@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Written 2026-10-10: make room for a second (spare) ESP32-S3 on the Pi without it ever taking
 # /dev/esp32 from the robot's own board.
-#   sudo setup/09_esp32_spare.sh
+#   sudo setup/09_esp32_spare.sh [ROBOT_SERIAL]   (default A4:CB:8F:CA:3A:BC, the original board)
+#   after a board swap: sudo setup/09_esp32_spare.sh 94:A9:90:CE:20:AC   (the board now on the robot)
 # The old rules gave /dev/esp32 to ANY Espressif native-USB device (303a) and to any CH34x UART
 # (1a86): with two boards plugged in, the link went to whichever enumerated last, and the next
 # navigation start would have talked to a board with no motors.
@@ -11,7 +12,8 @@
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "run with sudo: sudo $0"; exit 1; }
 RULES=/etc/udev/rules.d/99-campus-bot.rules
-ROBOT_SERIAL='A4:CB:8F:CA:3A:BC'
+ROBOT_SERIAL="${1:-A4:CB:8F:CA:3A:BC}"
+[[ "$ROBOT_SERIAL" =~ ^([0-9A-F]{2}:){5}[0-9A-F]{2}$ ]] || { echo "serial must look like 94:A9:90:CE:20:AC"; exit 1; }
 cp -n "$RULES" "$RULES.bak-before-spare"
 sed -i '/idVendor}=="303a"/d; /idVendor}=="1a86"/d' "$RULES"
 cat >> "$RULES" <<EOF
