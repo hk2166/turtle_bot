@@ -208,9 +208,11 @@ global_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
-          raytrace_max_range: 3.0
+          # Planner sees moved chairs 4 m out (was 2.5), so it picks another aisle before committing
+          # to a blocked one; clearing reaches 5 m so chairs that moved away are wiped sooner.
+          raytrace_max_range: 5.0
           raytrace_min_range: 0.0
-          obstacle_max_range: 2.5
+          obstacle_max_range: 4.0
           obstacle_min_range: 0.0
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"

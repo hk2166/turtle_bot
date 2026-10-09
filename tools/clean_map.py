@@ -9,6 +9,10 @@ writes maps/<area>_clean.pgm + .yaml and maps/<area>_report.txt.
 Cleaning (only small, isolated things are touched; walls are never thinned or moved):
   * occupied specks of ≤ --speck cells with no unknown space around them → free
     (ghosts of legs, chair wheels, lidar noise)
+  * movables: free-standing objects (free floor all round) of ≤ --movable cells and ≤ 0.5 m across
+    → free: chairs, bins, plant pots as they stood while mapping. Colleagues move them; baked into
+    the map they block gaps that are open today. The lidar still sees them live wherever they are.
+    Walls, desks and anything touching them are kept. --keep-movables turns this off.
   * enclosed unknown holes of ≤ --hole cells → free (gaps in free space the beams just missed)
 --deep additionally:
   * bigger speck/hole limits (6 / 40 cells)
@@ -33,6 +37,8 @@ def main():
     ap.add_argument('map_yaml')
     ap.add_argument('--speck', type=int, default=3, help='max occupied blob (cells) to remove')
     ap.add_argument('--hole', type=int, default=25, help='max enclosed unknown hole (cells) to fill')
+    ap.add_argument('--movable', type=int, default=30, help='max free-standing object (cells) to drop')
+    ap.add_argument('--keep-movables', action='store_true', help="don't drop free-standing objects")
     ap.add_argument('--deep', action='store_true', help='stronger pass: see the header')
     args = ap.parse_args()
     if args.deep:
@@ -56,13 +62,19 @@ def main():
     occ = (m == OCC).astype(np.uint8)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(occ, connectivity=8)
     unk_near = cv2.dilate((m == UNK).astype(np.uint8), np.ones((5, 5), np.uint8))
-    specks = 0
+    specks = movables = 0
+    max_span = int(round(0.5 / res))
     for i in range(1, n):
-        if stats[i, cv2.CC_STAT_AREA] <= args.speck:
+        area = stats[i, cv2.CC_STAT_AREA]
+        span = max(stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT])
+        speck = area <= args.speck
+        movable = not args.keep_movables and area <= args.movable and span <= max_span
+        if speck or movable:
             blob = labels == i
             if not unk_near[blob].any():
                 out[blob] = FREE
-                specks += 1
+                specks += speck
+                movables += not speck
 
     unk = (out == UNK).astype(np.uint8)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(unk, connectivity=4)
@@ -116,6 +128,8 @@ def main():
         f'  free floor         {free_a:.1f} m²',
         f'  occupied cells     {occ_n}',
         f'  specks removed     {specks}  (≤ {args.speck} cells, not near unknown)',
+        (f'  movables removed   {movables}  (free-standing, ≤ {args.movable} cells and 0.5 m: chairs, bins)'
+         if not args.keep_movables else '  movables kept      (--keep-movables)'),
         f'  holes filled       {holes}  (≤ {args.hole} cells, enclosed)',
         f'  spray removed      {sprayed * cell:.1f} m² of unreachable "free" (glass bleed)' if args.deep else
         '  (run with --deep to also strip unreachable glass-bleed spray)',

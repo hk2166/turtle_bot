@@ -30,8 +30,11 @@ warn() { printf '    \033[33m! %s\033[0m\n' "$*"; }
 err()  { printf '    \033[31m✗ %s\033[0m\n' "$*" >&2; }
 
 is_running() {  # is_running NAME
-  local pid
-  pid="$(cat "$RUN_DIR/$1.pid" 2>/dev/null)" || return 1
+  local pid f="$RUN_DIR/$1.pid" boot
+  pid="$(cat "$f" 2>/dev/null)" || return 1
+  # a pid file from before the last reboot is stale even if some other process now has that PID
+  boot=$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) ))
+  (( $(stat -c %Y "$f") >= boot )) || return 1
   [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
 }
 

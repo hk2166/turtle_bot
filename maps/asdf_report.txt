@@ -1,8 +1,9 @@
 Map asdf  (288×395 cells at 0.05 m = 14.4 × 19.8 m)
   mapped extent      14.4 × 18.1 m
-  free floor         109.2 m²
-  occupied cells     5226
+  free floor         110.5 m²
+  occupied cells     4733
   specks removed     127  (≤ 3 cells, not near unknown)
+  movables removed   60  (free-standing, ≤ 30 cells and 0.5 m: chairs, bins)
   holes filled       359  (≤ 25 cells, enclosed)
   (run with --deep to also strip unreachable glass-bleed spray)
   NOTE: statistics only. The original grading metric has not been recovered.
