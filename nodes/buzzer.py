@@ -25,8 +25,15 @@ import time
 
 PWM_DIR = '/run/campus-bot-buzzer'
 TYPE = os.environ.get('BUZZER_TYPE', 'active')
-BOTH = ('front', 'rear')
-WHERE = {'reversing': ('rear',), 'blocked': ('front',), 'moving': ('front',)}   # default: both
+# BUZZER_LINES: which buzzers are wired ("front", or "front,rear"). A sound meant for a missing one
+# plays on the ones that exist, so a single buzzer still gives every sound.
+BOTH = tuple(n for n in os.environ.get('BUZZER_LINES', 'front,rear').replace(' ', '').split(',') if n) or ('front',)
+WHERE = {'reversing': ('rear',), 'blocked': ('front',), 'moving': ('front',)}   # default: all wired
+
+
+def lines_for(name):
+    want = [n for n in WHERE.get(name, BOTH) if n in BOTH]
+    return tuple(want) or BOTH
 
 # passive: (frequency Hz or 0 for a rest, seconds)
 NOTES = {
@@ -108,7 +115,7 @@ class Player:
 
     def play(self, name):
         if self.dry:
-            print(f'{time.strftime("%H:%M:%S")} ♪ {name} ({"+".join(WHERE.get(name, BOTH))})', flush=True)
+            print(f'{time.strftime("%H:%M:%S")} ♪ {name} ({"+".join(lines_for(name))})', flush=True)
         self.q.put(name)
 
     def off(self):
@@ -119,7 +126,7 @@ class Player:
         while True:
             name = self.q.get()
             self.playing = True
-            where = [self.lines[n] for n in WHERE.get(name, BOTH)]
+            where = [self.lines[n] for n in lines_for(name)]
             try:
                 for hz, sec in SOUNDS[name]:
                     for line in where:
