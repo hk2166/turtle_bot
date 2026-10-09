@@ -338,7 +338,7 @@ async function pollCam(){
    if(r.ok){const b=await r.blob();const u=URL.createObjectURL(b);
     c.onload=()=>URL.revokeObjectURL(u);c.src=u;document.getElementById('camoff').style.display='none'}
    else document.getElementById('camoff').textContent=await r.text()}catch(e){}}
- setTimeout(pollCam,feedOn?220:1000)}
+ setTimeout(pollCam,feedOn?60:1000)}   // next frame right after this one (camera previews at 8 Hz)
 let events='';let tab='events';
 function setTab(t,btn){tab=t;document.querySelectorAll('.tab').forEach(b=>b.classList.remove('on'));
  if(btn)btn.classList.add('on');renderLog(events)}

@@ -11,7 +11,7 @@ Publishes
                                  score = tag edge in pixels (negative: orientation ambiguous, a face-on
                                  or small tag; position still good). results[1..4]: class_id 'corner', position =
                                  the observed corner's ray (x/z, y/z, 1), undistorted, in aruco order.
-    /camera/image/compressed     sensor_msgs/CompressedImage   small JPEG preview (2 Hz) with tags drawn
+    /camera/image/compressed     sensor_msgs/CompressedImage   small JPEG preview (8 Hz, 480 px) with tags drawn
     /camera/camera_info          sensor_msgs/CameraInfo        for the preview size
 Full frames never go on the network: detection runs here, so mapping over WiFi stays light.
 Intrinsics: config/camera_intrinsics.yaml (tools/calibrate_camera.py); spec-sheet FOV until then.
@@ -43,8 +43,10 @@ class CameraNode(Node):
         self.tag_size = float(self.declare_parameter('tag_size', 0.16).value)
         self.min_side_px = float(self.declare_parameter('min_side_px', 20.0).value)
         detect_hz = float(self.declare_parameter('detect_hz', 10.0).value)
-        preview_hz = float(self.declare_parameter('preview_hz', 2.0).value)
-        self.preview_width = int(self.declare_parameter('preview_width', 640).value)
+        # 8 Hz x 480 px (was 2 Hz x 640): the dashboard feed lagged; detection already decodes 10 Hz,
+        # so the preview only adds a resize + small JPEG per frame (2026-10-10)
+        preview_hz = float(self.declare_parameter('preview_hz', 8.0).value)
+        self.preview_width = int(self.declare_parameter('preview_width', 480).value)
         # Capture → read latency of the MJPG pipeline; the stamp is moved back by this much.
         self.latency = float(self.declare_parameter('latency', 0.05).value)
 
@@ -179,7 +181,7 @@ class CameraNode(Node):
             cv2.polylines(small, [pts], True, (0, 255, 0) if good else (0, 165, 255), 2)
             cv2.putText(small, str(tag_id), tuple(int(v) for v in pts[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                         (0, 255, 0) if good else (0, 165, 255), 2)
-        ok, jpg = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        ok, jpg = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 60])
         if not ok:
             return
         msg = CompressedImage()
