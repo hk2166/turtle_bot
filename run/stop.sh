@@ -35,7 +35,7 @@ if is_running bringup || is_running agent || pgrep -f "$AGENT" >/dev/null; then
 fi
 # 3. Everything we started.
 NAMES=(slam rviz rviz_lidar tags camera foxglove auto pose_keeper odom_tf lidar agent hw_lidar hw_agent bringup)
-(( KEEPDASH )) || NAMES+=(dashboard)
+(( KEEPDASH )) || NAMES+=(dashboard buzzer)
 for name in "${NAMES[@]}"; do stop_bg "$name"; done
 # 4. Strays (crashed or orphaned runs), matched precisely (see STRAYS above).
 found=0
