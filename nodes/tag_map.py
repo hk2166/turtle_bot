@@ -16,6 +16,14 @@ localize  Each sighting of a known tag gives a full robot pose in the map, indep
           (re)start AMCL there. Small differences are left to AMCL, which is more precise once converged.
           Every fix also goes out on /tag_pose for RViz.
 Both modes publish /tag_markers (the tags in the map) for RViz.
+
+Camera tilt self-check (localize mode, 2026-10-10): a bumped camera made every fix "implausible".
+While the robot stands still with a known tag 0.8-3.5 m away, the tag centre's elevation in the image
+is compared with the one its recorded height and the camera height predict (no AMCL pose needed).
+When >= 30 such sightings over >= 3 s agree within 0.5 deg and differ from the current trim by
+> 0.4 deg (0.3 deg already nearly fails the fit), the camera pitch used here is trimmed by that much (capped at +-8 deg: beyond that the
+mount needs fixing by hand). The trim is saved to ~/.campus_bot/run/camera_pitch_trim.yaml and loaded
+by both modes at start; config/robot.env is never changed.
 """
 import math
 import os
@@ -37,6 +45,8 @@ from vision_msgs.msg import Detection3DArray
 from visualization_msgs.msg import Marker, MarkerArray
 
 import tags_common as tc
+
+TRIM_FILE = os.path.expanduser('~/.campus_bot/run/camera_pitch_trim.yaml')
 
 
 class TagMap(Node):
@@ -66,7 +76,10 @@ class TagMap(Node):
         self.tf = Buffer(cache_time=Duration(seconds=30))
         # Its own node and thread: the lookups below wait, and TF must keep arriving meanwhile.
         self.tf_listener = TransformListener(self.tf, None, spin_thread=True)
-        self.T_base_cam = None          # base_link ← camera_optical (static)
+        self.T_base_cam = None          # base_link ← camera_optical, with the pitch trim applied
+        self.T_base_cam_tf = None       # the same, as the TF tree (config/robot.env) has it
+        self.trim_deg = self.load_trim()
+        self.trim_obs = deque(maxlen=120)   # (monotonic time, implied extra pitch deg)
         self.twist = None               # latest (v, w, time)
         self.create_subscription(Odometry, odom_topic, self.on_odom, 10)
         self.create_subscription(Detection3DArray, '/tags', self.on_tags, 10)
@@ -105,10 +118,13 @@ class TagMap(Node):
         if not msg.detections:
             return
         if self.T_base_cam is None:
-            self.T_base_cam = self.lookup(self.base_frame, msg.header.frame_id, Time())
-            if self.T_base_cam is None:
+            self.T_base_cam_tf = self.lookup(self.base_frame, msg.header.frame_id, Time())
+            if self.T_base_cam_tf is None:
                 self.counts['no_tf'] += len(msg.detections)
                 return
+            self.T_base_cam = self.trimmed(self.T_base_cam_tf, self.trim_deg)
+            if self.trim_deg:
+                self.get_logger().info(f'camera pitch trim {self.trim_deg:+.2f} deg (from {TRIM_FILE})')
         stamp = Time.from_msg(msg.header.stamp)
         dets = []
         for d in msg.detections:
@@ -227,7 +243,67 @@ class TagMap(Node):
         self.get_logger().info(f'{len(tags)} tags loaded: {sorted(tags)}')
         return tags
 
+    # ------------------------------------------------------------ camera tilt self-check
+    @staticmethod
+    def trimmed(T_base_cam, deg):
+        """Camera pitched further down by deg: a rotation about the body's y axis, which is the
+        optical frame's -x axis, so T_base_cam @ Rx_optical(-deg)."""
+        T = T_base_cam.copy()
+        T[:3, :3] = T_base_cam[:3, :3] @ tc.rpy_to_mat(-math.radians(deg), 0.0, 0.0)
+        return T
+
+    def load_trim(self):
+        try:
+            with open(TRIM_FILE) as f:
+                return float((yaml.safe_load(f) or {}).get('pitch_trim_deg', 0.0))
+        except (OSError, ValueError, TypeError, AttributeError):
+            return 0.0
+
+    def check_tilt(self, dets):
+        tw = self.twist
+        if tw is None or tw[0] > 0.02 or tw[1] > 0.02 or time.monotonic() - tw[2] > 1.0:
+            return                                       # only while standing still
+        R_body = self.T_base_cam_tf[:3, :3] @ tc.R_BODY_OPTICAL.T
+        p0 = math.degrees(tc.mat_to_rpy(R_body)[1])      # pitch the TF tree has (+ = nose down)
+        cam_z = self.T_base_cam_tf[2, 3]
+        now = time.monotonic()
+        for tag_id, T_cam_tag, _, _, _ in dets:
+            if tag_id not in self.tags:
+                continue
+            x, y, z = T_cam_tag[:3, 3]
+            rng = math.sqrt(x * x + y * y + z * z)
+            if not 0.8 <= rng <= 3.5:
+                continue
+            up = math.degrees(math.atan2(-y, math.hypot(x, z)))     # above the optical axis
+            dz = self.tags[tag_id][2, 3] - cam_z
+            elev = math.degrees(math.atan2(dz, math.sqrt(max(rng * rng - dz * dz, 1e-6))))
+            self.trim_obs.append((now, up - elev - p0))
+        recent = [d for t, d in self.trim_obs if now - t < 30.0]
+        span = now - min((t for t, _ in self.trim_obs if now - t < 30.0), default=now)
+        if len(recent) < 30 or span < 3.0:
+            return
+        med = float(np.median(recent))
+        mad = float(np.median(np.abs(np.array(recent) - med)))
+        if mad > 0.5 or abs(med - self.trim_deg) <= 0.4:
+            return
+        self.trim_obs.clear()
+        if abs(med) > 8.0:
+            self.get_logger().error(f'camera looks {med:+.1f} deg off its calibrated tilt: too much to trim, '
+                                    'check the camera mount (re-measure: README, Camera localization)')
+            return
+        old, self.trim_deg = self.trim_deg, med
+        self.T_base_cam = self.trimmed(self.T_base_cam_tf, med)
+        os.makedirs(os.path.dirname(TRIM_FILE), exist_ok=True)
+        with open(TRIM_FILE + '.tmp', 'w') as f:
+            f.write(f'# written by nodes/tag_map.py {time.strftime("%Y-%m-%d %H:%M:%S")}: camera pitch beyond '
+                    f'config/robot.env (+ = more nose-down), from {len(recent)} still sightings\n'
+                    f'pitch_trim_deg: {med:.3f}\n')
+        os.replace(TRIM_FILE + '.tmp', TRIM_FILE)
+        self.get_logger().warning(f'camera tilt changed: pitch trim {old:+.2f} -> {med:+.2f} deg '
+                                  f'({len(recent)} sightings, spread {mad:.2f} deg), saved to {TRIM_FILE}')
+
     def localize(self, dets, stamp):
+        self.check_tilt(dets)
         T_odom_base = self.lookup(self.odom_frame, self.base_frame, stamp)
         if T_odom_base is None:
             self.counts['no_tf'] += len(dets)
@@ -336,8 +412,9 @@ class TagMap(Node):
     def report(self):
         c = self.counts
         extra = f', {len([i for i in self.obs if len(self.obs[i]) >= 5])} tags mapped' if self.mode == 'record' else ''
+        trim = f', camera pitch trim {self.trim_deg:+.2f} deg' if self.trim_deg else ''
         self.get_logger().info(f'last 30 s: {c["seen"]} sightings, {c["used"]} used, {c["moving"]} while moving, '
-                               f'{c["far"]} too far, {c["no_tf"]} without TF, {c["odd"]} implausible{extra}')
+                               f'{c["far"]} too far, {c["no_tf"]} without TF, {c["odd"]} implausible{extra}{trim}')
         self.counts = {k: 0 for k in c}
 
 
