@@ -1,0 +1,17 @@
+# Claude Code remote control, always on: drive Claude in this folder from claude.ai/code or the
+# Claude app without a monitor or VS Code. Installed by setup/07_autostart.sh.
+[Unit]
+Description=Claude Code remote control (campus_bot_fw)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Desktop/campus_bot_fw
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/claude remote-control --name campus-bot
+# comes back by itself (network not up yet at boot, a dropped connection, an update)
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

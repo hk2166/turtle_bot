@@ -314,6 +314,21 @@ if (( NAV )); then
     start_bg auto python3 nodes/auto_clear.py
     ok "idle behaviour on: boxed in + idle ~1 min → moves itself to open floor (AUTO_CLEAR=0 disables)"
   fi
+  stop_bg pose_keeper >/dev/null
+  start_bg pose_keeper python3 nodes/pose_keeper.py --ros-args -p map:="$AREA"
+  # After a reboot: the pose saved while driving, accepted only if the live scan fits the map there
+  # (the robot may have been carried while off). Robots don't move while off, so age doesn't matter.
+  LAST="$RUN_DIR/last_pose_$AREA.yaml"
+  if [[ -z "$POSE" && -f "$LAST" ]] && ! python3 tools/pose_tool.py probe map base_link --timeout 1; then
+    read -r LX LY LYAW < <(python3 -c 'import sys,yaml,math; d=yaml.safe_load(open(sys.argv[1])); print(d["x"], d["y"], math.degrees(d["yaw"]))' "$LAST")
+    if FIT=$(python3 tools/fit_pose.py "$LX" "$LY" "$LYAW" --radius 0.6 --angle 20 2>/dev/null) \
+       && read -r FX FY FYAW FSC <<<"$FIT" && python3 -c "import sys; sys.exit(float(sys.argv[1]) < 0.6)" "$FSC"; then
+      python3 tools/pose_tool.py set "$FX" "$FY" "$FYAW" \
+        && ok "pose restored from before the restart: ($FX, $FY), lidar agrees ($FSC of the scan on walls)"
+    else
+      warn "saved pose ($LX, $LY) doesn't match the lidar (${FSC:-no fit}): robot moved while off? set it by hand"
+    fi
+  fi
   if (( CAM_UP )) && [[ -f "${MAP}_tags.yaml" ]]; then
     stop_bg tags >/dev/null
     start_bg tags python3 nodes/tag_map.py --ros-args -p mode:=localize -p tags_file:="${MAP}_tags.yaml" \

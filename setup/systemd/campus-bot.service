@@ -1,0 +1,17 @@
+# Campus Bot stack at boot: dashboard + navigation on the last map (run/autostart.sh).
+# Installed by setup/07_autostart.sh into ~/.config/systemd/user/.
+[Unit]
+Description=Campus Bot: dashboard + navigation
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Desktop/campus_bot_fw
+ExecStart=%h/Desktop/campus_bot_fw/run/autostart.sh
+ExecStop=%h/Desktop/campus_bot_fw/run/stop.sh
+TimeoutStopSec=60
+# no automatic restart: a stack that keeps failing must not keep restarting a robot
+Restart=no
+
+[Install]
+WantedBy=default.target

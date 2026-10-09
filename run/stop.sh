@@ -15,7 +15,7 @@ DRIVERS='^([^ ]*/)?python3 ([^ ]*/)?(teleop_keys|drive_hold)\.py'
 AGENT='^([^ ]*/)?micro_ros_agent( |$)|^([^ ]*/)?python3 ([^ ]*/)?sim_robot\.py'
 STRAYS=(
   "$DRIVERS"
-  "^([^ ]*/)?python3 ([^ ]*/)?(scan_monitor|odom_to_tf|scan_filter|sim_robot|camera_node|tag_map|auto_clear$( (( KEEPDASH )) || echo '|dashboard' ))\.py"
+  "^([^ ]*/)?python3 ([^ ]*/)?(scan_monitor|odom_to_tf|scan_filter|sim_robot|camera_node|tag_map|auto_clear|pose_keeper$( (( KEEPDASH )) || echo '|dashboard' ))\.py"
   '^([^ ]*/)?(rviz2|micro_ros_agent|sllidar_node|async_slam_toolbox_node|static_transform_publisher|v4l2_camera_node|map_saver_cli|component_container[^ ]*|lifecycle_manager|foxglove_bridge)( |$)'
   '^/opt/ros/jazzy/lib/(nav2_|opennav_)[^ ]*'
   '^([^ ]*/)?python3 [^ ]*/ros2 (launch [^ ]*campus_bot_fw|launch nav2_bringup|run (micro_ros_agent|sllidar_ros2|v4l2_camera|nav2_map_server|slam_toolbox))'
@@ -34,7 +34,7 @@ if is_running bringup || is_running agent || pgrep -f "$AGENT" >/dev/null; then
     && ok "zero velocity sent on $CMD_VEL_TOPIC" || warn "couldn't send zero velocity (the 300 ms watchdog stops the motors anyway)"
 fi
 # 3. Everything we started.
-NAMES=(slam rviz rviz_lidar tags camera foxglove auto odom_tf lidar agent hw_lidar hw_agent bringup)
+NAMES=(slam rviz rviz_lidar tags camera foxglove auto pose_keeper odom_tf lidar agent hw_lidar hw_agent bringup)
 (( KEEPDASH )) || NAMES+=(dashboard)
 for name in "${NAMES[@]}"; do stop_bg "$name"; done
 # 4. Strays (crashed or orphaned runs), matched precisely (see STRAYS above).
