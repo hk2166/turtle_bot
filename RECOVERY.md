@@ -175,6 +175,14 @@ It publishes the masked scan that slam_toolbox consumes.
     with the card, so people must re-enrol.
   - **Camera:** the Brio 100 enumerates (UVC, MJPG). All four Pi USB ports were in use, so it was
     swapped out for the ESP32 during the check.
+  - **Spare ESP32-S3 (2026-10-10):** a second Edgebax S3-PRO (USB serial 94:A9:90:CE:20:AC) now
+    carries the original firmware, cloned from the 2026-10-01 dump by `tools/clone_esp32.sh` (write
+    + hash verified; the spare's own old flash is in `~/recovered/esp32-spare-20261010-014658/`). Tested
+    alone: micro-ROS session, `/odom` and `/imu/data_raw` at 20 Hz, same topics as the robot's board.
+    `setup/09_esp32_spare.sh` pins `/dev/esp32` to the robot board (A4:CB:8F:CA:3A:BC); any other
+    ESP32-S3 is `/dev/esp32_spare`. The firmware's micro-ROS domain is fixed at 0, so an agent's
+    ROS_DOMAIN_ID does NOT isolate a test board: run it only with the robot stack stopped.
+    Swap-in: move the motor/IMU/bumper wires, then re-run 09_esp32_spare.sh with the new serial.
   - **Incident, same day:** the first `run/drive.sh` "reset" left the ESP32 in its **ROM download loader**
     ("waiting for download"), so it went silent: no session, no `/odom`. On the S3's native USB, DTR/RTS
     are commands. DTR=1 + RTS=0 arms download mode, DTR=0 + RTS=1 resets, and 0/0 disarms. This port is
