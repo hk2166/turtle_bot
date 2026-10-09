@@ -18,7 +18,8 @@ done
 run/dashboard.sh on
 # the robot's voice (nodes/buzzer.py); like the dashboard it outlives navigation restarts
 if [[ "${BUZZER:-1}" == 1 ]] && ! is_running buzzer; then
-  start_bg buzzer env BUZZER_MOVING="${BUZZER_MOVING:-1}" python3 nodes/buzzer.py
+  start_bg buzzer env BUZZER_MOVING="${BUZZER_MOVING:-1}" BUZZER_TYPE="${BUZZER_TYPE:-active}" \
+    python3 nodes/buzzer.py
 fi
 
 AREA="$(cat "$RUN_DIR/dash_map" 2>/dev/null)"

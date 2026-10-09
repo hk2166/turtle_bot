@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Written 2026-10-09: the robot's voice. 5 passive buzzers in parallel on one transistor, GPIO12 PWM.
+# Written 2026-10-09: the robot's voice. 2026-10-10: two ACTIVE buzzers, front (GPIO12) and rear
+# (GPIO13), each fed through 4 x 20 ohm (salvaged from the LED strip) = ~15 mA from the 3.3 V pin.
 """Plays a sound for what the robot is doing, so people nearby know without looking at a screen.
 
     python3 nodes/buzzer.py                 run (started at boot by run/autostart.sh when BUZZER=1)
@@ -9,10 +10,12 @@
 One-off sounds: hello (node start), ready (robot knows where it is), go (new goal), arrived,
 failed (goal given up), stuck (a recovery move starts), found (position set by camera/user),
 battery (low, every 60 s; /battery_state once a voltage sensor is fitted).
-While it lasts: reversing (beep-beep, the back has no bumper), blocked (double pip every 4 s:
-on a goal but not moving), moving (tiny tick every 5 s on a goal; BUZZER_MOVING=0 turns it off).
-Hardware: /run/campus-bot-buzzer -> RP1 PWM0 channel 0 (setup/08_buzzer.sh). 50% duty square wave;
-12 mm transducers are loudest near 2.7 kHz, so the tunes stay between 1.5 and 4.2 kHz.
+While it lasts: reversing (beep-beep on the REAR buzzer: the back has no bumper), blocked (double
+pip on the FRONT every 4 s: on a goal but not moving), moving (tiny FRONT tick every 5 s on a goal;
+BUZZER_MOVING=0 turns it off). Everything else plays on both.
+BUZZER_TYPE=active (default): the buzzers make their own tone, so sounds are rhythms (full-on PWM).
+BUZZER_TYPE=passive: 50% square waves, real notes (12 mm transducers are loudest near 2.7 kHz).
+Hardware: /run/campus-bot-buzzer/{front,rear} -> RP1 PWM0 channels 0/1 (setup/08_buzzer.sh).
 """
 import argparse
 import os
@@ -20,10 +23,13 @@ import queue
 import threading
 import time
 
-PWM = '/run/campus-bot-buzzer'
+PWM_DIR = '/run/campus-bot-buzzer'
+TYPE = os.environ.get('BUZZER_TYPE', 'active')
+BOTH = ('front', 'rear')
+WHERE = {'reversing': ('rear',), 'blocked': ('front',), 'moving': ('front',)}   # default: both
 
-# (frequency Hz or 0 for a rest, seconds)
-SOUNDS = {
+# passive: (frequency Hz or 0 for a rest, seconds)
+NOTES = {
     'hello':    [(2093, .12), (2637, .12), (3136, .12), (4186, .25)],
     'ready':    [(3136, .08), (0, .04), (4186, .15)],
     'go':       [(2093, .08), (2637, .12)],
@@ -36,18 +42,31 @@ SOUNDS = {
     'blocked':  [(2700, .06), (0, .06), (2700, .06)],
     'moving':   [(3500, .025)],
 }
+# active: (1 = on / 0 = off, seconds); each one a rhythm you can tell apart by ear
+B, _ = 1, 0
+RHYTHMS = {
+    'hello':    [(B, .08), (_, .08), (B, .08), (_, .08), (B, .08), (_, .08), (B, .30)],   # · · · —
+    'ready':    [(B, .05), (_, .06), (B, .05)],                                         # ··
+    'go':       [(B, .10)],                                                             # ·
+    'arrived':  [(B, .08), (_, .06), (B, .08), (_, .06), (B, .40)],                     # · · —
+    'failed':   [(B, .60), (_, .15), (B, .60)],                                         # — —
+    'stuck':    [(B, .25), (_, .10), (B, .06), (_, .10), (B, .25)],                     # — · —
+    'found':    [(B, .03), (_, .05), (B, .03)],                                         # tiny ··
+    'battery':  [(B, .50), (_, .50), (B, .50), (_, .50), (B, .50)],                     # slow — — —
+    'reversing': [(B, .40), (_, .40)],
+    'blocked':  [(B, .06), (_, .10), (B, .06)],
+    'moving':   [(B, .02)],
+}
+SOUNDS = RHYTHMS if TYPE == 'active' else NOTES
 
 
 class Pwm:
-    """The buzzer line: square wave of a frequency, or silence."""
-    def __init__(self, dry):
-        self.dry = dry or not os.path.exists(PWM)
-        self.on = False
-        if self.dry and not dry:
-            print(f'no {PWM} (run sudo setup/08_buzzer.sh and reboot): printing sounds instead', flush=True)
+    """One buzzer line. Active buzzer: steady high (100% duty) = sound. Passive: 50% square wave."""
+    def __init__(self, path, dry):
+        self.path, self.dry, self.on = path, dry, False
 
     def _w(self, name, v):
-        with open(os.path.join(PWM, name), 'w') as f:
+        with open(os.path.join(self.path, name), 'w') as f:
             f.write(str(v))
 
     def tone(self, hz):
@@ -56,42 +75,58 @@ class Pwm:
         if hz <= 0:
             self.off()
             return
-        period = int(1e9 / hz)
-        self._w('duty_cycle', 0)          # duty must never exceed the new period
+        if TYPE == 'active':
+            period, duty = 1_000_000, 1_000_000        # 1 kHz carrier at 100% = plain DC "on"
+        else:
+            period = int(1e9 / hz)
+            duty = period // 2
+        self._w('duty_cycle', 0)                      # duty must never exceed the new period
         self._w('period', period)
-        self._w('duty_cycle', period // 2)
+        self._w('duty_cycle', duty)
         if not self.on:
             self._w('enable', 1)
             self.on = True
 
     def off(self):
         if not self.dry and self.on:
+            self._w('duty_cycle', 0)
             self._w('enable', 0)
         self.on = False
 
 
 class Player:
     def __init__(self, dry):
-        self.pwm = Pwm(dry)
+        missing = not os.path.exists(os.path.join(PWM_DIR, 'front'))
+        if missing and not dry:
+            print(f'no {PWM_DIR}/front (run sudo setup/08_buzzer.sh and reboot): printing sounds instead',
+                  flush=True)
+        self.dry = dry or missing
+        self.lines = {n: Pwm(os.path.join(PWM_DIR, n), self.dry) for n in BOTH}
         self.q = queue.Queue()
         self.playing = False
         threading.Thread(target=self._run, daemon=True).start()
 
     def play(self, name):
-        if self.pwm.dry:
-            print(f'{time.strftime("%H:%M:%S")} ♪ {name}', flush=True)
+        if self.dry:
+            print(f'{time.strftime("%H:%M:%S")} ♪ {name} ({"+".join(WHERE.get(name, BOTH))})', flush=True)
         self.q.put(name)
+
+    def off(self):
+        for line in self.lines.values():
+            line.off()
 
     def _run(self):
         while True:
             name = self.q.get()
             self.playing = True
+            where = [self.lines[n] for n in WHERE.get(name, BOTH)]
             try:
                 for hz, sec in SOUNDS[name]:
-                    self.pwm.tone(hz)
+                    for line in where:
+                        line.tone(hz)
                     time.sleep(sec)
             finally:
-                self.pwm.off()
+                self.off()
                 self.playing = False
 
     def busy(self):
@@ -203,7 +238,7 @@ def run_ros(player, moving_ticks):
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        player.pwm.off()
+        player.off()
         node.destroy_node()
         rclpy.try_shutdown()
 
@@ -221,7 +256,7 @@ def main():
             while player.busy():
                 time.sleep(0.05)
             time.sleep(0.6)
-        player.pwm.off()
+        player.off()
         return
     run_ros(player, os.environ.get('BUZZER_MOVING', '1') == '1')
 
