@@ -39,6 +39,21 @@ button.vtab{font-size:12px;padding:5px 12px;margin-left:10px;vertical-align:midd
 #pad{display:grid;grid-template-columns:repeat(3,76px);gap:8px;justify-content:center;margin:14px 0}
 .padb{font-size:22px;padding:16px 0;touch-action:none;user-select:none}
 #padstop{border-color:var(--bad);color:var(--bad)}
+/* joystick: touch screens only (phones/tablets); mouse + keyboard keep the pad */
+#joyarea{display:none;flex-direction:column;align-items:center;gap:10px;margin:10px 0}
+#joy{position:relative;width:min(62vw,240px);aspect-ratio:1;border-radius:50%;
+  border:2px solid var(--line);background:radial-gradient(circle,#0f1d0f 0 55%,#0a140a 56%);
+  touch-action:none;user-select:none;-webkit-user-select:none}
+#joy::before,#joy::after{content:'';position:absolute;background:var(--line)}
+#joy::before{left:50%;top:8%;bottom:8%;width:1px}
+#joy::after{top:50%;left:8%;right:8%;height:1px}
+#knob{position:absolute;left:50%;top:50%;width:34%;aspect-ratio:1;border-radius:50%;
+  transform:translate(-50%,-50%);background:#1d3a1d;border:2px solid var(--fg);
+  box-shadow:0 0 12px #49f07a55;pointer-events:none}
+#joy.on #knob{background:#2c5a2c}
+#joystop{border-color:var(--bad);color:var(--bad);width:min(62vw,240px)}
+.joyonly{display:none}
+@media(pointer:coarse){#pad,.nojoy{display:none}#joyarea{display:flex}.joyonly{display:inline}}
 #spd{accent-color:#49f07a;flex:1}
 #log{flex:1;min-height:0;overflow-y:auto;font-size:11px;color:var(--dim);white-space:pre-wrap;margin-top:6px}
 .ok{color:var(--fg)}.bad{color:var(--bad)}
@@ -56,7 +71,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
  #mapwrap{height:56dvh}
  #map{max-height:56dvh}
  #camwrap{max-height:none;aspect-ratio:16/9}
- #camwrap2{height:38dvh;flex:none}
+ #camwrap2{height:30dvh;flex:none!important}   /* beats its inline flex:1 */
  #log{height:26dvh;flex:none}
  button{padding:12px 14px;font-size:13px}
  button.tab{padding:6px 10px;font-size:11px}
@@ -127,11 +142,16 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
   </div>
  </div>
  <div class="panel">
-  <h2>DRIVE PAD — HOLD to move (buttons or WASD/arrows) · release = stop</h2>
+  <h2><span class="nojoy">DRIVE PAD — HOLD to move (buttons or WASD/arrows) · release = stop</span><span class="joyonly">JOYSTICK — drag to drive · let go = stop</span></h2>
   <div id="pad">
    <span></span><button class="padb" data-k="f">▲</button><span></span>
    <button class="padb" data-k="l">◀</button><button class="padb" id="padstop">■</button><button class="padb" data-k="r">▶</button>
    <span></span><button class="padb" data-k="b">▼</button><span></span>
+  </div>
+  <div id="joyarea">
+   <div id="joy"><div id="knob"></div></div>
+   <small id="joyv">touch &amp; drag · up = forward · let go = stop</small>
+   <button id="joystop">■ STOP</button>
   </div>
   <div class="row"><span style="color:var(--dim)">SPEED</span>
    <input id="spd" type="range" min="0.10" max="0.80" step="0.05" value="0.20">
@@ -143,25 +163,36 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 <script>
 let view='mission';
 async function setView(v,btn){view=v;setTimeout(fitCanvas,50);
- document.getElementById('view-mission').style.display=v=='mission'?'grid':'none';
- document.getElementById('view-manual').style.display=v=='manual'?'grid':'none';
+ document.getElementById('view-mission').style.display=v=='mission'?'':'none';
+ document.getElementById('view-manual').style.display=v=='manual'?'':'none';
  document.querySelectorAll('.vtab').forEach(b=>b.classList.remove('on'));
  if(btn)btn.classList.add('on');
  if(v=='manual'){await post('/api/stop',{});log('manual drive: goals cancelled')}
- else{held={f:0,b:0,l:0,r:0}}}
+ else{held={f:0,b:0,l:0,r:0};stopJoy()}}
 let held={f:0,b:0,l:0,r:0};
+let joy={x:0,y:0,on:false};   // x right +, y up +, each -1..1 (touch joystick)
 const KEYMAP={ArrowUp:'f',w:'f',ArrowDown:'b',s:'b',ArrowLeft:'l',a:'l',ArrowRight:'r',d:'r'};
 document.addEventListener('keydown',e=>{const k=KEYMAP[e.key];
  if(view=='manual'&&k){held[k]=1;e.preventDefault()}});
 document.addEventListener('keyup',e=>{const k=KEYMAP[e.key];if(k)held[k]=0});
-document.addEventListener('visibilitychange',()=>{if(document.hidden)held={f:0,b:0,l:0,r:0}});
-window.addEventListener('blur',()=>held={f:0,b:0,l:0,r:0});
+function stopJoy(){joy={x:0,y:0,on:false};const k=document.getElementById('knob'),j=document.getElementById('joy');
+ if(k)k.style.transform='translate(-50%,-50%)';if(j)j.classList.remove('on')}
+document.addEventListener('visibilitychange',()=>{if(document.hidden){held={f:0,b:0,l:0,r:0};stopJoy()}});
+window.addEventListener('blur',()=>{held={f:0,b:0,l:0,r:0};stopJoy()});
 setInterval(()=>{if(view!='manual'||document.hidden)return;
  const sp=parseFloat(document.getElementById('spd').value);
  const v=document.getElementById('spdv');
  v.textContent=sp.toFixed(2)+' m/s'+(sp>0.4?'  ⚠ FAST':'');
  v.style.color=sp>0.4?'var(--warn)':'';
- post('/api/drive',{vx:(held.f-held.b)*sp, wz:(held.l-held.r)*0.7});},130);
+ let vx=(held.f-held.b)*sp, wz=(held.l-held.r)*0.7;
+ if(joy.on){
+  // 12% dead zone so a resting thumb doesn't creep; reverse capped at half speed (no rear bumper)
+  const dz=a=>Math.abs(a)<0.12?0:Math.sign(a)*(Math.abs(a)-0.12)/0.88;
+  const y=dz(joy.y), x=dz(joy.x);
+  vx=y>0?y*sp:y*sp*0.5; wz=-x*0.9;
+  document.getElementById('joyv').textContent=
+   (vx>=0?'▲ ':'▼ ')+Math.abs(vx).toFixed(2)+' m/s · turn '+(wz>0?'◀ ':wz<0?'▶ ':'')+Math.abs(wz).toFixed(2);}
+ post('/api/drive',{vx, wz});},130);
 document.addEventListener('pointerup',()=>{if(!document.querySelector('.padb:active'))held={f:0,b:0,l:0,r:0}});
 window.addEventListener('load',()=>{
  document.querySelectorAll('.padb[data-k]').forEach(b=>{
@@ -170,6 +201,16 @@ window.addEventListener('load',()=>{
   ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>b.addEventListener(ev,()=>held[k]=0));
  });
  document.getElementById('padstop').addEventListener('pointerdown',()=>{held={f:0,b:0,l:0,r:0};post('/api/stop',{})});
+ const J=document.getElementById('joy'),K=document.getElementById('knob');
+ function joyMove(e){const r=J.getBoundingClientRect(),R=r.width/2;
+  let dx=e.clientX-(r.left+R), dy=e.clientY-(r.top+R); const d=Math.hypot(dx,dy), m=R*0.75;
+  if(d>m){dx*=m/d;dy*=m/d}
+  K.style.transform=`translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px))`;
+  joy={x:dx/m,y:-dy/m,on:true};J.classList.add('on');e.preventDefault()}
+ J.addEventListener('pointerdown',e=>{J.setPointerCapture(e.pointerId);joyMove(e)});
+ J.addEventListener('pointermove',e=>{if(joy.on)joyMove(e)});
+ ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>J.addEventListener(ev,stopJoy));
+ document.getElementById('joystop').addEventListener('pointerdown',()=>{stopJoy();held={f:0,b:0,l:0,r:0};post('/api/stop',{})});
 });
 const cv=document.getElementById('map'),cx=cv.getContext('2d');
 // scale the canvas (up or down) to fill the map pane, keeping the map's aspect ratio
