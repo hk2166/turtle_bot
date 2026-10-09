@@ -183,6 +183,13 @@ It publishes the masked scan that slam_toolbox consumes.
     ESP32-S3 is `/dev/esp32_spare`. The firmware's micro-ROS domain is fixed at 0, so an agent's
     ROS_DOMAIN_ID does NOT isolate a test board: run it only with the robot stack stopped.
     Swap-in: move the motor/IMU/bumper wires, then re-run 09_esp32_spare.sh with the new serial.
+  - **Original firmware's UART0 boot log (2026-10-10, spare board, /dev/esp32_uart):**
+    `[campus_bot] boot` / 13x `Wire ... i2cWriteReadNonStop returned Error -1` (IMU wires loose after
+    the board swap) / `[imu] ok, gyro bias 106.7 108.3 -16.9 LSB (187 samples)` / `[hx711] no response
+    on DT=11 SCK=12` / `[drive] ready: 4676.7 steps/m, acc 7015 steps/s^2` / `reset_reason=1
+    heap=171964 MTU=2048 hist=8` / `waiting for agent`. So: HX711 on 11/12 (not 13/14); the IMU is
+    elsewhere; the drive maths uses a 108.9 mm wheel (effective 97.9 mm with the Pi's 0.8994), and
+    its own ramp is ~1.35 m/s^2 real. `firmware/.../config.h` updated (not flashed).
   - **Incident, same day:** the first `run/drive.sh` "reset" left the ESP32 in its **ROM download loader**
     ("waiting for download"), so it went silent: no session, no `/odom`. On the S3's native USB, DTR/RTS
     are commands. DTR=1 + RTS=0 arms download mode, DTR=0 + RTS=1 resets, and 0/0 disarms. This port is

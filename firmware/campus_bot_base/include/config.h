@@ -9,11 +9,13 @@
 #pragma once
 
 // ---------- Geometry (calibrate with tools/calibrate_odom.py, then edit here) ----------
-// Calibrated 2026-10-01 (tools/calibrate_odom.py, office carpet): effective diameter 89.9 mm
-// (100 mm disc, carpet squish); separation confirmed ~0.350. The running (original) firmware still
-// uses 100 mm — the Pi corrects it in odom_to_tf.py (ODOM_*_SCALE in config/robot.env). If THIS
-// firmware is flashed with the value below, set those scales back to 1.0.
-#define WHEEL_DIA        0.0899f  // m, effective on carpet; straight-line calibration scales this
+// The ORIGINAL firmware's boot log (2026-10-10, spare board on UART0) says "[drive] ready: 4676.7
+// steps/m": with 1600 steps/rev that is a 108.9 mm wheel in its maths, NOT the 100 mm assumed on
+// 2026-10-01. The Pi's calibrated correction (ODOM_LIN_SCALE 0.8994, tools/calibrate_odom.py, carpet)
+// therefore puts the real effective diameter at 0.8994 x 108.9 = 97.9 mm. (The old 89.9 mm here came
+// from applying 0.8994 to 100 mm and would have made every distance ~9% short.) If THIS firmware is
+// flashed with the value below, set ODOM_LIN_SCALE / ODOM_ANG_SCALE in config/robot.env back to 1.0.
+#define WHEEL_DIA        0.0979f  // m, effective on carpet (derived above; re-run calibrate_odom.py after flashing)
 #define WHEEL_SEP        0.350f   // m, nominal 340–360; spin calibration sets the EFFECTIVE value
 #define STEPS_PER_REV    1600     // DM542 DIP setting (no gearbox)
 #define INVERT_LEFT      false    // VERIFY: motors are mirrored, one side normally needs inverting
@@ -23,7 +25,10 @@
 // ---------- Motion limits (CLAUDE.md hard rules) ----------
 #define MAX_LIN_SPEED    0.80f    // m/s
 #define MAX_ANG_SPEED    1.50f    // rad/s
-#define MAX_LIN_ACCEL    0.50f    // m/s^2 — tower stability, NEVER raise
+#define MAX_LIN_ACCEL    0.50f    // m/s^2 — tower stability, NEVER raise. (The original firmware ramps at
+                                  // 7015 steps/s^2 = 1.5 m/s^2 in its maths, ~1.35 m/s^2 real: its own
+                                  // watchdog/bumper stops are harder than this. The Pi's smoother keeps
+                                  // normal driving at 0.5.)
 #define MAX_ANG_ACCEL    1.00f    // rad/s^2
 #define CMD_TIMEOUT_MS   300      // command watchdog: no cmd_vel for this long → ramp to 0
 // Bumper hit: stop harder than the normal ramp. Still a ramp, not a step-stall, so the tower
@@ -36,10 +41,10 @@
 #define PIN_RIGHT_PUL    8        // motor B (reserved in the wiring plan)
 #define PIN_RIGHT_DIR    9
 #define PIN_BUMPER       10       // VERIFY: 6× V-156 NC in series to GND, INPUT_PULLUP → HIGH = open = tripped
-#define PIN_IMU_SDA      11       // VERIFY: "dedicated SDA/SCL header"
-#define PIN_IMU_SCL      12       // VERIFY
-#define PIN_HX711_DT     13       // VERIFY
-#define PIN_HX711_SCK    14       // VERIFY
+#define PIN_IMU_SDA      -1       // UNKNOWN: not 11/12 (the HX711 is there, boot log below). The log only
+#define PIN_IMU_SCL      -1       // prints IMU pins when it fails; read them off the board's wiring.
+#define PIN_HX711_DT     11       // REAL: original boot log "[hx711] no response on DT=11 SCK=12" (2026-10-10)
+#define PIN_HX711_SCK    12       // REAL
 
 // ---------- Sensors ----------
 #define MPU_ADDR         0x68
