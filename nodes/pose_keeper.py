@@ -5,8 +5,9 @@
     started by run/remap.sh with navigation:  python3 nodes/pose_keeper.py --ros-args -p map:=<area>
 
 run/remap.sh reads the file at the next start, checks it against the lidar (tools/fit_pose.py) and
-sets AMCL there when the walls line up. Writes are rare and atomic (SD card, see CLAUDE.md): only
-after a move of 5 cm / 3°, at most every 10 s, plus once on exit.
+sets AMCL there when the walls line up. Writes are small and atomic (SD card, see CLAUDE.md): only
+after a move of 5 cm / 3°, at most every 3 s, plus once on exit. 10 s left the saved pose up to ~2 m
+behind when the power cable came out mid-drive (2026-10-09).
 """
 import math
 import os
@@ -33,7 +34,7 @@ class PoseKeeper(Node):
         self.saved_t = 0.0
         self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self.on_pose,
                                  QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
-        self.create_timer(2.0, self.maybe_save)
+        self.create_timer(1.0, self.maybe_save)
         self.get_logger().info(f'keeping the pose in {self.path}')
 
     def on_pose(self, m):
@@ -44,7 +45,7 @@ class PoseKeeper(Node):
         if self.latest is None:
             return
         if not force:
-            if time.monotonic() - self.saved_t < 10.0:
+            if time.monotonic() - self.saved_t < 3.0:
                 return
             if self.saved is not None:
                 dx, dy = self.latest[0] - self.saved[0], self.latest[1] - self.saved[1]

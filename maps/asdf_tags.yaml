@@ -1,0 +1,105 @@
+# AprilTags for map asdf, camera calibrated 2026-10-09 (lens 0.36 m, pitch 4.78 deg).
+# Merged from two drive-pasts (power cut ended the first): tags 0-3 from pass 1 (22:24),
+# 4-7 from pass 2 (22:44). Pass 2 put tag 1 1.6 m and tag 2 0.4 m off while AMCL was
+# unsure, so those came from pass 1, which matches the 2026-10-08 recording.
+frame: map
+family: tag36h11
+tag_size: 0.16
+recorded: 2026-10-09 (merged)
+tags:
+  0:
+    x: -15.1826
+    y: 1.3164
+    z: 0.4011
+    qx: -0.364765
+    qy: 0.605761
+    qz: 0.605761
+    qw: -0.364765
+    facing_deg: 152.1
+    upright: true
+    sightings: 295
+    spread_m: 0.043
+  1:
+    x: -14.7562
+    y: 2.306
+    z: 0.3567
+    qx: -0.383312
+    qy: 0.594199
+    qz: 0.594199
+    qw: -0.383312
+    facing_deg: 155.7
+    upright: true
+    sightings: 153
+    spread_m: 0.152
+  2:
+    x: -17.8582
+    y: 3.2857
+    z: 0.3845
+    qx: 0.687611
+    qy: -0.164899
+    qz: -0.164899
+    qw: 0.687611
+    facing_deg: -117.0
+    upright: true
+    sightings: 61
+    spread_m: 0.009
+  3:
+    x: -19.109
+    y: 3.7684
+    z: 0.3811
+    qx: 0.69207
+    qy: -0.145049
+    qz: -0.145049
+    qw: 0.69207
+    facing_deg: -113.7
+    upright: true
+    sightings: 270
+    spread_m: 0.006
+  4:
+    x: -14.2878
+    y: 4.2071
+    z: 0.3634
+    qx: -0.380101
+    qy: 0.596258
+    qz: 0.596258
+    qw: -0.380101
+    facing_deg: 155.0
+    upright: true
+    sightings: 300
+    spread_m: 0.0
+  5:
+    x: -14.6298
+    y: 2.7423
+    z: 0.3868
+    qx: 0.13688
+    qy: 0.693732
+    qz: 0.693732
+    qw: 0.13688
+    facing_deg: 67.7
+    upright: true
+    sightings: 187
+    spread_m: 0.005
+  6:
+    x: -19.0005
+    y: -2.1836
+    z: 0.2983
+    qx: -0.39229
+    qy: 0.58831
+    qz: 0.58831
+    qw: -0.39229
+    facing_deg: 157.4
+    upright: true
+    sightings: 195
+    spread_m: 0.008
+  7:
+    x: -18.0891
+    y: -0.2979
+    z: 0.3127
+    qx: -0.379094
+    qy: 0.596898
+    qz: 0.596898
+    qw: -0.379094
+    facing_deg: 154.8
+    upright: true
+    sightings: 183
+    spread_m: 0.011
