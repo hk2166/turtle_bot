@@ -1,0 +1,103 @@
+# AprilTags carried from maps/asdf_tags.yaml by tools/transfer_tags.py, 2026-10-10 00:49
+# alignment: rotate +18.00 deg, shift (+29.853, +2.453) m, score 0.73
+frame: map
+family: tag36h11
+tag_size: 0.16
+recorded: 2026-10-09 (merged) (carried over from asdf)
+tags:
+  0:
+    x: 15.007
+    y: -0.9864
+    z: 0.4011
+    qx: -0.455036
+    qy: 0.541241
+    qz: 0.541241
+    qw: -0.455036
+    facing_deg: 170.1
+    upright: true
+    sightings: 295
+    spread_m: 0.043
+  1:
+    x: 15.1068
+    y: 0.0865
+    z: 0.3567
+    qx: -0.471546
+    qy: 0.52692
+    qz: 0.52692
+    qw: -0.471546
+    facing_deg: 173.7
+    upright: true
+    sightings: 153
+    spread_m: 0.152
+  2:
+    x: 11.8539
+    y: 0.0597
+    z: 0.3845
+    qx: 0.704941
+    qy: -0.055303
+    qz: -0.055303
+    qw: 0.704941
+    facing_deg: -99.0
+    upright: true
+    sightings: 61
+    spread_m: 0.009
+  3:
+    x: 10.5151
+    y: 0.1323
+    z: 0.3811
+    qx: 0.70624
+    qy: -0.035
+    qz: -0.035
+    qw: 0.70624
+    facing_deg: -95.7
+    upright: true
+    sightings: 270
+    spread_m: 0.006
+  4:
+    x: 14.9648
+    y: 2.0393
+    z: 0.3634
+    qx: -0.468696
+    qy: 0.529456
+    qz: 0.529456
+    qw: -0.468696
+    facing_deg: 173.0
+    upright: true
+    sightings: 300
+    spread_m: 0.0
+  5:
+    x: 15.0922
+    y: 0.5405
+    z: 0.3868
+    qx: 0.026671
+    qy: 0.706604
+    qz: 0.706604
+    qw: 0.026671
+    facing_deg: 85.7
+    upright: true
+    sightings: 187
+    spread_m: 0.005
+  6:
+    x: 12.4576
+    y: -5.4949
+    z: 0.2983
+    qx: -0.479492
+    qy: 0.519699
+    qz: 0.519699
+    qw: -0.479492
+    facing_deg: 175.4
+    upright: true
+    sightings: 195
+    spread_m: 0.008
+  7:
+    x: 12.7416
+    y: -3.4198
+    z: 0.3127
+    qx: -0.467802
+    qy: 0.530246
+    qz: 0.530246
+    qw: -0.467802
+    facing_deg: 172.8
+    upright: true
+    sightings: 183
+    spread_m: 0.011
