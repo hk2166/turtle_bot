@@ -45,7 +45,8 @@ beats a reconstruction.
 - **ESP32-S3 (Edgebax S3-PRO):**
   - Motor A: IO4 → PUL−, IO7 → DIR−, with ESP32 5V → PUL+ and DIR+ (common anode). Bench-proven.
     IO5/IO6 do not work on this board.
-  - Motor B: IO8/IO9 (reserved).
+  - Motor B: pins NOT IO8/IO9 (the original firmware's boot log puts the IMU's SDA/SCL on IO8/IO9,
+    2026-10-10). The real motor B pins are still to be confirmed.
   - Also free: IO10–18, 35–42, 47, 48, and the SDA/SCL header. Avoid IO0, IO3, IO45 and IO46.
   - Flash through the UART USB-C port.
 - **Lidar:** Slamtec RPLIDAR C1 at **460800 baud (not 115200)**, via a CP2102 USB-TTL stick. The

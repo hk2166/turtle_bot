@@ -38,11 +38,11 @@
 // ---------- Pins (Edgebax S3-PRO). Avoid IO0, IO3, IO45, IO46; IO5/IO6 don't work on this board. ----------
 #define PIN_LEFT_PUL     4        // motor A, bench-proven (PUL−, common-anode +5 V)
 #define PIN_LEFT_DIR     7        // motor A, bench-proven (DIR−)
-#define PIN_RIGHT_PUL    8        // motor B (reserved in the wiring plan)
-#define PIN_RIGHT_DIR    9
+#define PIN_RIGHT_PUL    -1       // UNKNOWN: NOT 8/9 - the IMU is there (original boot log, below). The
+#define PIN_RIGHT_DIR    -1       // CLAUDE.md "Motor B: IO8/IO9" note was wrong; find the real pins.
 #define PIN_BUMPER       10       // VERIFY: 6× V-156 NC in series to GND, INPUT_PULLUP → HIGH = open = tripped
-#define PIN_IMU_SDA      -1       // UNKNOWN: not 11/12 (the HX711 is there, boot log below). The log only
-#define PIN_IMU_SCL      -1       // prints IMU pins when it fails; read them off the board's wiring.
+#define PIN_IMU_SDA      8        // REAL: original boot log "[imu] not found on SDA=8 SCL=9" (2026-10-10,
+#define PIN_IMU_SCL      9        // original board, IMU disconnected after the swap)
 #define PIN_HX711_DT     11       // REAL: original boot log "[hx711] no response on DT=11 SCK=12" (2026-10-10)
 #define PIN_HX711_SCK    12       // REAL
 

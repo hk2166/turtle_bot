@@ -190,6 +190,10 @@ It publishes the masked scan that slam_toolbox consumes.
     heap=171964 MTU=2048 hist=8` / `waiting for agent`. So: HX711 on 11/12 (not 13/14); the IMU is
     elsewhere; the drive maths uses a 108.9 mm wheel (effective 97.9 mm with the Pi's 0.8994), and
     its own ramp is ~1.35 m/s^2 real. `firmware/.../config.h` updated (not flashed).
+  - **IMU pins found (2026-10-10):** the original board, IMU wiring disturbed, logs `[imu] not found on
+    SDA=8 SCL=9`. So the IMU owns IO8/IO9 and CLAUDE.md's "Motor B: IO8/IO9" was wrong. After the
+    board swap the spare saw 15-36 I2C errors per boot and 40% corrupted IMU samples at runtime: most
+    likely motor B's PUL-/DIR- were moved onto IO8/IO9 alongside the IMU. Motor B's real pins: TBD.
   - **Incident, same day:** the first `run/drive.sh` "reset" left the ESP32 in its **ROM download loader**
     ("waiting for download"), so it went silent: no session, no `/odom`. On the S3's native USB, DTR/RTS
     are commands. DTR=1 + RTS=0 arms download mode, DTR=0 + RTS=1 resets, and 0/0 disarms. This port is
