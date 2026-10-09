@@ -4,6 +4,11 @@
 # dashboard; the pose comes back from nodes/pose_keeper.py's file if the lidar agrees.
 #   systemctl --user status campus-bot      journalctl --user -u campus-bot
 #   systemctl --user stop campus-bot        stops everything (run/stop.sh)
+# The whole script is one { ... } block: bash parses it completely before running anything, so
+# editing this file while the service runs can't break it (it did on 2026-10-10: bash kept reading
+# the changed file from its old offset after nav.sh returned, hit a syntax error, and the service
+# stopped the whole stack).
+{
 set -uo pipefail
 # shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -35,3 +40,4 @@ fi
 
 # Stay alive: the stack's processes live in this service; stopping the service stops them.
 exec sleep infinity
+}
