@@ -18,6 +18,7 @@ and a person standing briefly next to the robot does not trigger it (the conditi
 the full minute).
 """
 import math
+import os
 import time
 
 import numpy as np
@@ -40,6 +41,8 @@ except ImportError:
     cv2 = None
 
 ACTIVE = (GoalStatus.STATUS_ACCEPTED, GoalStatus.STATUS_EXECUTING, GoalStatus.STATUS_CANCELING)
+# touched every second by the dashboard's queue while the robot waits for a caller at their place
+HOLD_FILE = os.path.expanduser('~/.campus_bot/run/hold_position')
 
 
 def sector_mins(msg):
@@ -137,9 +140,16 @@ class AutoClear(Node):
                 return float(px[i]), float(py[i]), float(d[i]), float(dt[ys[i], xs[i]])
         return None
 
+    def held(self):
+        try:
+            return time.time() - os.path.getmtime(HOLD_FILE) < 5.0
+        except OSError:
+            return False
+
     def tick(self):
         now = time.monotonic()
-        busy = now < self.goal_active_until or self.speed > 0.03 or now < self.cooldown_until
+        busy = (now < self.goal_active_until or self.speed > 0.03 or now < self.cooldown_until
+                or self.held())
         bad, why = self.boxed_in()
         if not bad:
             self.bad_since = None

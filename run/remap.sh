@@ -88,6 +88,10 @@ else
     [[ -e "$LIDAR_DEV" ]] || { err "Lidar port $LIDAR_DEV not found. Plug in the CP2102 stick (ls /dev/ttyUSB*)."; exit 1; }
     [[ -e "$ESP32_DEV" ]] || { err "ESP32 port $ESP32_DEV not found. Plug in the ESP32's native USB-C port (303a:1001)."; exit 1; }
     info "lidar $LIDAR_DEV @ $LIDAR_BAUD   ESP32 $ESP32_DEV @ $AGENT_BAUD"
+    # the C1 sometimes boots into "internal error" (health 2) and sllidar_node just exits; its own
+    # RESET command clears it (2026-10-13), so check health first and reset when needed
+    if python3 tools/lidar_reset.py --port "$LIDAR_DEV" --baud "$LIDAR_BAUD" | sed 's/^/    /'; then :
+    else warn "lidar still unhealthy after a software reset: unplug its USB stick for 5 s"; fi
   fi
   start_bg bringup ros2 launch "$PROJECT_DIR/launch/bringup.launch.py" \
     sim:=$([[ $SIM == 1 ]] && echo true || echo false) \

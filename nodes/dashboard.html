@@ -62,6 +62,11 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
   padding:3px 6px;border-radius:4px}
 #setpose.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
 #fenceb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
+#pinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
+.qrow{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed var(--line)}
+.qrow span{flex:1}
+.qrow button{padding:3px 8px;font-size:10px;letter-spacing:1px}
+#qlist,#plist{flex:1;min-height:0;overflow-y:auto}
 /* phones and small tablets: stack and let the PAGE scroll; touch-sized controls */
 @media(max-width:900px){
  html,body{overflow:auto;height:auto}
@@ -83,6 +88,8 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 <h1>▚ CAMPUS BOT <span class="blink">▮</span>
  <button class="tab vtab on" onclick="setView('mission',this)">MISSION CONTROL</button>
  <button class="tab vtab" onclick="setView('manual',this)">MANUAL DRIVE</button>
+ <button class="tab vtab" onclick="setView('queue',this)">QUEUE &amp; PLACES <span id="qbadge"></span></button>
+ <button class="tab" style="margin-left:auto" onclick="logout()">LOG OUT</button>
 </h1>
 <div id="bar">
  <span><b>MAP</b>
@@ -114,6 +121,8 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    <button id="fencesave" onclick="fenceSave()" style="display:none">✔ SAVE FENCE</button>
    <button id="fencecancel" onclick="fenceCancel()" style="display:none">✕</button>
    <button onclick="fenceClear()" title="delete ALL fence lines of this map (re-draw from scratch)">⌫ CLEAR FENCE</button>
+   <button id="pinb" onclick="pinBtn()" title="click the map where a named place should be (desk, pantry...)">📍 PIN PLACE</button>
+   <button onclick="pinHere()" title="name the spot where the robot stands now (most precise: drive it there first)">📍 PIN ROBOT SPOT</button>
    <small id="fit"></small>
   </div>
  </div>
@@ -160,11 +169,27 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    stops the robot within 0.3 s (motor watchdog). Entering this tab cancels any map goal.</small></div>
  </div>
 </div>
+<div class="grid" id="view-queue" style="display:none">
+ <div class="panel">
+  <h2>CALL QUEUE — anyone on the office WiFi: <span id="calllink"></span></h2>
+  <div class="row" style="margin-top:0">
+   <span id="qstate">…</span>
+   <button id="qpause" onclick="qPause()">⏸ PAUSE QUEUE</button>
+   <button onclick="qClear()" style="border-color:var(--bad);color:var(--bad)">✕ CLEAR QUEUE</button>
+  </div>
+  <div id="qlist" style="margin-top:8px"></div>
+ </div>
+ <div class="panel">
+  <h2>PLACES ON THIS MAP — pin them on MISSION CONTROL (📍 buttons under the map)</h2>
+  <div id="plist"></div>
+ </div>
+</div>
 <script>
 let view='mission';
 async function setView(v,btn){view=v;setTimeout(fitCanvas,50);
  document.getElementById('view-mission').style.display=v=='mission'?'':'none';
  document.getElementById('view-manual').style.display=v=='manual'?'':'none';
+ document.getElementById('view-queue').style.display=v=='queue'?'':'none';
  document.querySelectorAll('.vtab').forEach(b=>b.classList.remove('on'));
  if(btn)btn.classList.add('on');
  if(v=='manual'){await post('/api/stop',{});log('manual drive: goals cancelled')}
@@ -220,7 +245,14 @@ function fitCanvas(){const w=document.getElementById('mapwrap');if(!cv.width||!w
 window.addEventListener('resize',fitCanvas);
 const img=new Image(); img.id='mapimg'; img.src='/map.png';
 img.onload=()=>{cv.width=img.width;cv.height=img.height;fitCanvas();draw()};
-let M=null,S={},poseDrag=null,feedOn=true,armPose=false,fenceMode=false,fencePts=[];
+let M=null,S={},poseDrag=null,feedOn=true,armPose=false,fenceMode=false,fencePts=[],pinMode=false;
+function pinBtn(){pinMode=!pinMode;document.getElementById('pinb').classList.toggle('armed',pinMode);
+ if(pinMode)log('PIN PLACE: click the map where the place is (it snaps to reachable floor)')}
+async function pinAt(x,y){pinMode=false;document.getElementById('pinb').classList.remove('armed');
+ const name=prompt('Name for this place (shown to everyone on the call page):');if(!name)return;
+ const r=await(await post('/api/places/add',{name,x,y})).json();log(r.msg)}
+async function pinHere(){const name=prompt('Name for the spot where the robot stands now:');if(!name)return;
+ const r=await(await post('/api/places/add',{name,here:true})).json();log(r.msg)}
 function fenceBtn(){fenceMode=!fenceMode;fencePts=[];
  document.getElementById('fenceb').classList.toggle('armed',fenceMode);
  document.getElementById('fencesave').style.display=fenceMode?'':'none';
@@ -315,6 +347,9 @@ function draw(){
  if(S.fence&&S.fence.length){cx.strokeStyle='#ff5566';cx.lineWidth=2*L;
   S.fence.forEach(sg=>{const[a,b]=w2p(sg[0],sg[1]),[c,d]=w2p(sg[2],sg[3]);
    cx.beginPath();cx.moveTo(a,b);cx.lineTo(c,d);cx.stroke()})}
+ (S.places||[]).forEach(p=>{const[a,b]=w2p(p.x,p.y);cx.fillStyle='#ffb347';cx.beginPath();
+  cx.arc(a,b-6*L,4*L,0,7);cx.fill();cx.beginPath();cx.moveTo(a-3*L,b-4*L);cx.lineTo(a,b);cx.lineTo(a+3*L,b-4*L);cx.fill();
+  cx.font=`${10*L}px monospace`;cx.fillText(p.name,a+6*L,b-6*L)});
  if(fencePts.length){cx.strokeStyle='#ff5566';cx.setLineDash([4*L,3*L]);cx.lineWidth=2*L;cx.beginPath();
   fencePts.forEach((p,i)=>{const[a,b]=w2p(p[0],p[1]);i?cx.lineTo(a,b):cx.moveTo(a,b);});cx.stroke();
   cx.setLineDash([]);fencePts.forEach(p=>{const[a,b]=w2p(p[0],p[1]);cx.strokeRect(a-3*L,b-3*L,6*L,6*L)})}
@@ -323,6 +358,7 @@ async function handleTap(e){
  if(!M)return;
  const r=cv.getBoundingClientRect();const[x,y]=p2w(e.clientX-r.left,e.clientY-r.top);
  if(fenceMode){fencePts.push([x,y]);draw();return}
+ if(pinMode){pinAt(x,y);return}
  await post('/api/goal',{x,y});log(`goal → ${x.toFixed(2)}, ${y.toFixed(2)}`)}
 
 document.getElementById('stop').onclick=async()=>{await post('/api/stop',{});log('STOP sent')};
@@ -330,6 +366,34 @@ async function fit(mode){await post('/api/fit',{mode});log('pose fit started ('+
 async function goHome(){await post('/api/home',{});log('going home')}
 async function setHome(){if(confirm('Save the robot\'s current spot as HOME for this map?')){await post('/api/home_set',{});log('home set')}}
 async function post(u,b){return fetch(u,{method:'POST',body:JSON.stringify(b)})}
+async function logout(){await post('/api/logout',{});location.href='/login'}
+async function qPause(){await post('/api/queue/pause',{paused:!(S.queue&&S.queue.paused)})}
+async function qClear(){if(confirm('Cancel EVERY open request in the queue?')){await post('/api/queue/clear',{});log('queue cleared')}}
+async function qCancel(id,name){if(confirm(`Cancel the request of ${name}?`))await post('/api/queue/cancel',{id})}
+async function pDelete(id,name){if(confirm(`Delete the place "${name}"?`))await post('/api/places/delete',{id})}
+function mk(tag,text){const e=document.createElement(tag);e.textContent=text;return e}
+let lastQ='',lastP='';
+function renderQueue(s){
+ const q=s.queue||{jobs:[]},open=q.jobs.filter(j=>['waiting','driving','arrived'].includes(j.status));
+ document.getElementById('qbadge').textContent=open.length?`(${open.length})`:'';
+ document.getElementById('calllink').textContent=location.host+'/call';
+ document.getElementById('qstate').textContent=q.paused?'⏸ PAUSED'+(q.msg?' — '+q.msg:''):'▶ RUNNING · robot '+q.robot;
+ document.getElementById('qstate').className=q.paused?'bad':'ok';
+ document.getElementById('qpause').textContent=q.paused?'▶ RESUME QUEUE':'⏸ PAUSE QUEUE';
+ const key=JSON.stringify(q.jobs);if(key!=lastQ){lastQ=key;const box=document.getElementById('qlist');box.textContent='';
+  if(!q.jobs.length)box.appendChild(mk('small','no requests yet'));
+  [...q.jobs].reverse().forEach(j=>{const r=document.createElement('div');r.className='qrow';
+   const isOpen=['waiting','driving','arrived'].includes(j.status);
+   r.appendChild(mk('span',`${j.status=='waiting'?'#'+j.pos:j.status.toUpperCase()}  ${j.name} → ${j.place_name}`+
+     `  ${new Date(j.created*1000).toTimeString().slice(0,5)}${j.note?'  ('+j.note+')':''}`));
+   if(!isOpen)r.style.opacity=.5;
+   if(isOpen){const b=mk('button','✕ CANCEL');b.onclick=()=>qCancel(j.id,j.name);r.appendChild(b)}
+   box.appendChild(r)})}
+ const pk=JSON.stringify(s.places||[]);if(pk!=lastP){lastP=pk;const box=document.getElementById('plist');box.textContent='';
+  if(!(s.places||[]).length)box.appendChild(mk('small','no places yet: use 📍 PIN PLACE / PIN ROBOT SPOT'));
+  (s.places||[]).forEach(p=>{const r=document.createElement('div');r.className='qrow';
+   r.appendChild(mk('span',`📍 ${p.name}  (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`));
+   const b=mk('button','✕ DELETE');b.onclick=()=>pDelete(p.id,p.name);r.appendChild(b);box.appendChild(r)})}}
 function feed(on){feedOn=on;document.getElementById('camoff').style.display=on?'none':'';
  if(!on)document.getElementById('cam').src=''}
 async function pollCam(){
@@ -361,7 +425,8 @@ async function saveMap(){await post('/api/map_save',{});log('saving map')}
 async function discardMap(){if(confirm('Discard this mapping run?')){await post('/api/map_discard',{});log('mapping discarded')}}
 let lastJob='',mapMode=false;
 setInterval(async()=>{try{
- const s=await(await fetch('/api/state')).json();S=s;M=s.map;
+ const rs=await fetch('/api/state');if(rs.status==401){location.href='/login';return}
+ const s=await rs.json();S=s;M=s.map;renderQueue(s);
  const el=(i,v)=>document.getElementById(i).textContent=v;
  el('nav',s.nav);el('power',s.power);el('wifi',s.wifi);el('temp',s.temp);
  el('pose',s.pose?`${s.pose[0].toFixed(2)}, ${s.pose[1].toFixed(2)} @ ${(s.pose[2]*57.3).toFixed(0)}°`:'unknown');

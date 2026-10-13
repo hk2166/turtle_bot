@@ -35,6 +35,8 @@ from rclpy.node import Node
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener
 
+import fleet
+
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.expanduser('~/.campus_bot/logs')
 LOGS = {n: os.path.join(LOG_DIR, n + '.log') for n in
@@ -486,22 +488,71 @@ def refresh_map():
 PAGE = open(os.path.join(PROJECT, 'nodes', 'dashboard.html'), 'rb').read()
 
 
+CALL_PAGE = open(os.path.join(PROJECT, 'nodes', 'call.html'), 'rb').read()
+LOGIN_PAGE = open(os.path.join(PROJECT, 'nodes', 'login.html'), 'rb').read()
+# Open to anyone on the WiFi: the call page and what it needs. Everything else is admin-only.
+PUBLIC_GET = ('/call', '/login', '/api/places', '/api/queue')
+PUBLIC_POST = ('/api/login', '/api/request', '/api/request/cancel', '/api/request/done')
+# admin actions that take the robot away from the queue (it pauses, a trip in progress goes back in front)
+TAKES_CONTROL = {'/api/goal': 'map goal', '/api/stop': 'STOP', '/api/drive': 'manual drive',
+                 '/api/home': 'HOME', '/api/use_map': 'map switch', '/api/map_start': 'mapping'}
+
+
 class Handler(BaseHTTPRequestHandler):
     ros = None
     cam = None
     state = None
+    auth = None
+    queue = None
 
     def log_message(self, *a):
         pass
 
-    def send(self, code, ctype, body):
+    def send(self, code, ctype, body, headers=()):
         self.send_response(code)
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        for k, v in headers:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
+    def json(self, obj, code=200, headers=()):
+        self.send(code, 'application/json', json.dumps(obj).encode(), headers)
+
+    def token(self):
+        for part in (self.headers.get('Cookie') or '').split(';'):
+            k, _, v = part.strip().partition('=')
+            if k == 'cb_admin':
+                return v
+        return ''
+
+    def is_admin(self):
+        # the robot itself (scripts, curl on the Pi) is trusted; everyone else needs a login
+        return self.client_address[0] in ('127.0.0.1', '::1', '::ffff:127.0.0.1') or self.auth.valid(self.token())
+
     def do_GET(self):
+        route = self.path.split('?')[0]
+        if route == '/call':
+            self.send(200, 'text/html; charset=utf-8', CALL_PAGE)
+            return
+        if route == '/login':
+            self.send(200, 'text/html; charset=utf-8', LOGIN_PAGE)
+            return
+        if route == '/api/places':
+            self.json({'map': AREA, 'places': [{'id': p['id'], 'name': p['name']} for p in fleet.load_places(AREA)]})
+            return
+        if route == '/api/queue':
+            dev = self.path.split('device=')[1].split('&')[0] if 'device=' in self.path else ''
+            self.json(self.queue.public_view(dev))
+            return
+        if not self.is_admin():
+            if route in ('/', '/index.html'):
+                self.send(302, 'text/plain', b'login', (('Location', '/login'),))
+            else:
+                self.send(401, 'text/plain', b'admin login required')
+            return
         if self.path in ('/', '/index.html'):
             self.send(200, 'text/html; charset=utf-8', PAGE)
         elif self.path.startswith('/map.png'):
@@ -527,7 +578,8 @@ class Handler(BaseHTTPRequestHandler):
                  'fit': self.state.fit_msg, 'fence': __import__('fence_map').load_fence(AREA),
                  'home': list(get_home(AREA)[:3]) if os.path.exists(os.path.join(PROJECT, 'maps', f'{AREA}_clean.yaml')) else None,
                  'map': {'A': A[:2].tolist(), 'Ainv': Ainv[:2].tolist(),
-                         'h': shape[0], 'w': shape[1]}, **s}
+                         'h': shape[0], 'w': shape[1]},
+                 'places': fleet.load_places(AREA), 'queue': self.queue.admin_view(), **s}
             self.send(200, 'application/json', json.dumps(d).encode())
         elif self.path.startswith('/api/logs'):
             name = (self.path.split('f=')[1].split('&')[0] if 'f=' in self.path else 'nav')
@@ -561,8 +613,68 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         n = int(self.headers.get('Content-Length', 0))
-        body = json.loads(self.rfile.read(n) or b'{}')
-        if self.path == '/api/drive':
+        try:
+            body = json.loads(self.rfile.read(n) or b'{}')
+        except ValueError:
+            body = {}
+        # ---- open to everyone (the call page)
+        if self.path == '/api/login':
+            tok = self.auth.login(str(body.get('password', '')))
+            if tok is None:
+                self.json({'ok': False, 'msg': 'wrong password' if fleet.Auth.configured() else
+                           'no admin password yet: on the robot run  python3 tools/set_admin_password.py'})
+            else:
+                self.json({'ok': True}, headers=(('Set-Cookie', f'cb_admin={tok}; Path=/; HttpOnly; '
+                                                  f'SameSite=Strict; Max-Age={fleet.SESSION_S}'),))
+            return
+        if self.path == '/api/request':
+            job, msg = self.queue.request(body.get('name'), body.get('place'), body.get('device'))
+            self.json({'ok': job is not None, 'msg': msg,
+                       **({'id': job['id'], 'token': job['token']} if job else {})})
+            return
+        if self.path == '/api/request/cancel':
+            self.json({'ok': self.queue.cancel(body.get('id'), body.get('token'))})
+            return
+        if self.path == '/api/request/done':
+            self.json({'ok': self.queue.done(body.get('id'), body.get('token'))})
+            return
+        # ---- admin only
+        if not self.is_admin():
+            self.send(401, 'text/plain', b'admin login required')
+            return
+        if self.path in TAKES_CONTROL:
+            self.queue.admin_took_control(TAKES_CONTROL[self.path])
+        if self.path in ('/api/use_map', '/api/map_start'):
+            self.queue.clear('map changed: open requests cancelled (places belong to the old map)')
+        if self.path == '/api/logout':
+            self.auth.logout(self.token())
+            self.json({'ok': True}, headers=(('Set-Cookie', 'cb_admin=; Path=/; Max-Age=0'),))
+        elif self.path == '/api/places/add':
+            if body.get('here'):
+                p = self.ros.pose()
+                if p is None:
+                    self.json({'ok': False, 'msg': 'the robot has no position yet'})
+                    return
+                x, y, yaw = p
+            else:
+                snapped = snap_reachable(self.ros, body['x'], body['y']) or snap_goal(body['x'], body['y'])
+                if snapped is None or snapped[0] is None:
+                    self.json({'ok': False, 'msg': 'no reachable floor near there'})
+                    return
+                x, y, yaw = snapped[0], snapped[1], None
+            place, msg = fleet.add_place(AREA, body.get('name', ''), x, y, yaw)
+            self.state.fit_msg = msg
+            self.json({'ok': place is not None, 'msg': msg})
+        elif self.path == '/api/places/delete':
+            self.json({'ok': fleet.delete_place(AREA, body.get('id'))})
+        elif self.path == '/api/queue/cancel':
+            self.json({'ok': self.queue.cancel(body.get('id'), admin=True)})
+        elif self.path == '/api/queue/clear':
+            self.json({'ok': True, 'n': self.queue.clear()})
+        elif self.path == '/api/queue/pause':
+            self.queue.set_paused(bool(body.get('paused')))
+            self.json({'ok': True})
+        elif self.path == '/api/drive':
             # manual teleop: one Twist per POST. The browser streams while a control is held; when the
             # stream stops (release, hidden tab, WiFi drop) the firmware's 300 ms watchdog halts the robot.
             # hard caps = the robot's limits (robot.env): top ~0.8 m/s, 1.2 rad/s; firmware ramps accel
@@ -751,6 +863,18 @@ def main():
     Handler.ros = ros
     Handler.cam = Camera(ros)
     Handler.state = State()
+    Handler.auth = fleet.Auth()
+    nav = fleet.Navigator(ros)
+
+    def qlog(m):
+        print(time.strftime('%H:%M:%S'), m, flush=True)
+        Handler.state.fit_msg = m
+
+    Handler.queue = fleet.Queue(ros, nav, lambda: AREA, lambda: get_home(AREA),
+                                lambda: ros.pose() is not None and not pid_alive('slam'), qlog)
+    if not fleet.Auth.configured():
+        print('no admin password yet: python3 tools/set_admin_password.py (the call page works anyway)',
+              flush=True)
     srv = ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
     print(f'dashboard on http://0.0.0.0:{PORT}  (map: {AREA})', flush=True)
     try:

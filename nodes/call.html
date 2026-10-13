@@ -1,0 +1,107 @@
+<!doctype html>
+<!-- Written 2026-10-13: the office's "call the robot" page (nodes/dashboard.py, /call). No login. -->
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Call the Campus Bot</title>
+<style>
+:root{--bg:#060a06;--panel:#0a120a;--line:#1d3a1d;--fg:#49f07a;--dim:#2c7a46;--warn:#ffb347;--bad:#ff5566}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 "SF Mono","Fira Code",ui-monospace,Menlo,monospace;
+     padding:16px;max-width:560px;margin:0 auto}
+h1{font-size:16px;letter-spacing:3px;margin:4px 0 14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px}
+.card h2{font-size:11px;color:var(--dim);letter-spacing:2px;margin-bottom:8px}
+input{width:100%;background:#0f1d0f;border:1px solid var(--line);color:var(--fg);font:inherit;padding:11px;border-radius:5px}
+button{font:inherit;background:#0f1d0f;border:1px solid var(--fg);color:var(--fg);padding:13px;border-radius:6px;
+       cursor:pointer;letter-spacing:1px;width:100%;margin-top:8px;text-align:left}
+button:hover:not(:disabled){background:var(--fg);color:#04140a}
+button:disabled{opacity:.4;cursor:default}
+button.big{text-align:center;font-size:17px;padding:16px}
+button.bad{border-color:var(--bad);color:var(--bad);text-align:center}
+#status{font-size:17px}
+.dim{color:var(--dim);font-size:13px}
+.warn{color:var(--warn)}.badc{color:var(--bad)}
+ol{padding-left:22px}li{margin:3px 0}
+#err{color:var(--bad);min-height:1.4em;margin-top:8px;font-size:13px}
+</style></head><body>
+<h1>▚ CALL THE CAMPUS BOT</h1>
+
+<div class="card">
+ <h2>YOUR NAME</h2>
+ <input id="name" maxlength="40" placeholder="e.g. Priya" autocomplete="name">
+</div>
+
+<div class="card" id="mycard" style="display:none">
+ <h2>YOUR REQUEST</h2>
+ <div id="status"></div>
+ <div class="dim" id="sub"></div>
+ <button class="big" id="gotit" style="display:none" onclick="gotIt()">✔ GOT IT, THANKS</button>
+ <button class="bad" id="cancel" onclick="cancelMine()">✕ CANCEL MY REQUEST</button>
+</div>
+
+<div class="card" id="placecard">
+ <h2>CALL THE ROBOT TO…</h2>
+ <div id="places" class="dim">loading…</div>
+ <div id="err"></div>
+</div>
+
+<div class="card">
+ <h2>QUEUE · <span id="robot">…</span></h2>
+ <ol id="queue"></ol>
+ <div class="dim" id="qempty">nobody waiting</div>
+</div>
+<p class="dim" style="text-align:center;margin-top:6px"><a href="/login" style="color:var(--dim)">admin</a></p>
+
+<script>
+// one device id per browser (one open request per device) + the name, both remembered
+const store={get:k=>{try{return localStorage.getItem(k)}catch(_){return null}},
+             set:(k,v)=>{try{localStorage.setItem(k,v)}catch(_){}}};
+let device=store.get('cb_device');
+if(!device){device=(crypto.randomUUID?crypto.randomUUID():String(Math.random()).slice(2)+Date.now());store.set('cb_device',device)}
+const nameEl=document.getElementById('name');nameEl.value=store.get('cb_name')||'';
+nameEl.addEventListener('input',()=>store.set('cb_name',nameEl.value));
+let mine=JSON.parse(store.get('cb_job')||'null');   // {id, token}
+const $=id=>document.getElementById(id);
+function el(tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e}
+async function api(u,b){const r=await fetch(u,b?{method:'POST',body:JSON.stringify(b)}:{});return r.json()}
+
+async function loadPlaces(){
+ try{const d=await api('/api/places');const box=$('places');box.textContent='';
+  if(!d.places.length){box.textContent='No places pinned yet: ask the admin to pin some.';return}
+  d.places.forEach(p=>{const b=el('button','→ '+p.name);b.onclick=()=>call(p.id,p.name);box.appendChild(b)})}
+ catch(_){$('places').textContent='robot not reachable'}}
+async function call(pid,pname){
+ const name=nameEl.value.trim();$('err').textContent='';
+ if(!name){$('err').textContent='Please enter your name first.';nameEl.focus();return}
+ const r=await api('/api/request',{name,place:pid,device});
+ if(!r.ok){$('err').textContent=r.msg;return}
+ mine={id:r.id,token:r.token};store.set('cb_job',JSON.stringify(mine));poll()}
+async function cancelMine(){if(!mine)return;if(!confirm('Cancel your request?'))return;
+ await api('/api/request/cancel',mine);poll()}
+async function gotIt(){if(!mine)return;await api('/api/request/done',mine);poll()}
+
+const LABEL={ready:'robot ready',busy:'robot on a trip',paused:'queue paused by admin',offline:'robot offline'};
+async function poll(){
+ try{const d=await api('/api/queue?device='+encodeURIComponent(device));
+  $('robot').textContent=LABEL[d.robot]||d.robot;$('robot').className=d.robot=='ready'?'':d.robot=='busy'?'warn':'badc';
+  const q=$('queue');q.textContent='';
+  d.queue.forEach(j=>q.appendChild(el('li',`${j.name} → ${j.place}  [${j.status=='waiting'?'#'+j.pos:j.status}]`)));
+  $('qempty').style.display=d.queue.length?'none':'';
+  const m=d.mine, open=m&&['waiting','driving','arrived'].includes(m.status);
+  $('mycard').style.display=m?'':'none';$('placecard').style.display=open?'none':'';
+  if(m){
+   const S={waiting:`#${m.pos} in line for ${m.place}`,driving:`On its way to ${m.place} 🚗`,
+            arrived:`Arrived at ${m.place}! Take your item`,done:'Done. Thanks!',
+            failed:`Couldn't reach ${m.place}`,cancelled:'Request cancelled'};
+   $('status').textContent=S[m.status]||m.status;
+   $('sub').textContent=m.status=='arrived'?`It leaves in ${m.wait_left} s if you don't tap GOT IT`:
+     m.status=='waiting'&&d.robot=='paused'?'The admin paused the queue for a moment.':
+     m.status=='waiting'&&d.robot=='offline'?'The robot is offline: your request waits.':(m.note||'');
+   $('gotit').style.display=m.status=='arrived'?'':'none';
+   $('cancel').style.display=open&&m.status!='arrived'?'':'none';
+   if(!open){mine=null;store.set('cb_job','null')}
+  }
+ }catch(_){$('robot').textContent='robot not reachable'}
+ setTimeout(poll,2000)}
+loadPlaces();poll();
+</script></body></html>

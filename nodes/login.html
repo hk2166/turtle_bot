@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- Written 2026-10-13: admin login for the dashboard (nodes/dashboard.py, /login). -->
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAMPUS BOT // ADMIN</title>
+<style>
+:root{--bg:#060a06;--panel:#0a120a;--line:#1d3a1d;--fg:#49f07a;--dim:#2c7a46;--bad:#ff5566}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font:14px/1.5 "SF Mono","Fira Code",ui-monospace,Menlo,monospace;
+     min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+.box{width:100%;max-width:360px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:22px}
+h1{font-size:15px;letter-spacing:3px;margin-bottom:16px}
+input,button{width:100%;font:inherit;font-size:15px;padding:12px;border-radius:5px;margin-top:10px}
+input{background:#0f1d0f;border:1px solid var(--line);color:var(--fg)}
+button{background:#0f1d0f;border:1px solid var(--fg);color:var(--fg);letter-spacing:2px;cursor:pointer}
+button:hover{background:var(--fg);color:#04140a}
+#msg{color:var(--bad);min-height:1.5em;margin-top:10px;font-size:13px}
+a{color:var(--dim)}
+</style></head><body>
+<form class="box" onsubmit="go(event)">
+ <h1>▚ CAMPUS BOT · ADMIN</h1>
+ <label for="pw" style="color:var(--dim);font-size:12px">ADMIN PASSWORD</label>
+ <input id="pw" type="password" autocomplete="current-password" autofocus>
+ <button type="submit">LOG IN</button>
+ <div id="msg"></div>
+ <p style="margin-top:14px;font-size:12px"><a href="/call">Just want to call the robot? →</a></p>
+</form>
+<script>
+async function go(e){e.preventDefault();const m=document.getElementById('msg');m.textContent='checking…';
+ try{const r=await (await fetch('/api/login',{method:'POST',body:JSON.stringify({password:document.getElementById('pw').value})})).json();
+  if(r.ok)location.href='/';else m.textContent=r.msg}catch(_){m.textContent='robot not reachable'}}
+</script></body></html>
