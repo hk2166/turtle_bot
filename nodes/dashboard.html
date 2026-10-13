@@ -63,6 +63,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 #setpose.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
 #fenceb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #pinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
+#unpinb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 .qrow{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed var(--line)}
 .qrow span{flex:1}
 .qrow button{padding:3px 8px;font-size:10px;letter-spacing:1px}
@@ -123,6 +124,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    <button onclick="fenceClear()" title="delete ALL fence lines of this map (re-draw from scratch)">⌫ CLEAR FENCE</button>
    <button id="pinb" onclick="pinBtn()" title="click the map where a named place should be (desk, pantry...)">📍 PIN PLACE</button>
    <button onclick="pinHere()" title="name the spot where the robot stands now (most precise: drive it there first)">📍 PIN ROBOT SPOT</button>
+   <button id="unpinb" onclick="unpinBtn()" title="then tap a pin on the map to delete it">✕ REMOVE PIN</button>
    <small id="fit"></small>
   </div>
  </div>
@@ -246,7 +248,20 @@ window.addEventListener('resize',fitCanvas);
 const img=new Image(); img.id='mapimg'; img.src='/map.png';
 img.onload=()=>{cv.width=img.width;cv.height=img.height;fitCanvas();draw()};
 let M=null,S={},poseDrag=null,feedOn=true,armPose=false,fenceMode=false,fencePts=[],pinMode=false;
+let unpinMode=false;
+function unpinBtn(){unpinMode=!unpinMode;document.getElementById('unpinb').classList.toggle('armed',unpinMode);
+ if(unpinMode){pinMode=false;document.getElementById('pinb').classList.remove('armed');
+  log((S.places||[]).length?'REMOVE PIN: tap the pin to delete':'REMOVE PIN: there are no pins on this map')}}
+async function unpinAt(x,y){
+ // the pin nearest to the tap, if it's within ~1 m (zoomed out, a tap is never exact)
+ let best=null,bd=1e9;(S.places||[]).forEach(p=>{const d=Math.hypot(p.x-x,p.y-y);if(d<bd){bd=d;best=p}});
+ if(!best||bd>1.0){log('REMOVE PIN: no pin there, tap closer to one (or press ✕ REMOVE PIN again to stop)');return}
+ unpinMode=false;document.getElementById('unpinb').classList.remove('armed');
+ if(!confirm(`Delete the place "${best.name}"? Colleagues can no longer call the robot there.`))return;
+ const r=await(await post('/api/places/delete',{id:best.id})).json();
+ log(r.ok?`pin "${best.name}" removed`:'could not remove the pin')}
 function pinBtn(){pinMode=!pinMode;document.getElementById('pinb').classList.toggle('armed',pinMode);
+ if(pinMode){unpinMode=false;document.getElementById('unpinb').classList.remove('armed')}
  if(pinMode)log('PIN PLACE: click the map where the place is (it snaps to reachable floor)')}
 async function pinAt(x,y){pinMode=false;document.getElementById('pinb').classList.remove('armed');
  const name=prompt('Name for this place (shown to everyone on the call page):');if(!name)return;
@@ -359,6 +374,7 @@ async function handleTap(e){
  const r=cv.getBoundingClientRect();const[x,y]=p2w(e.clientX-r.left,e.clientY-r.top);
  if(fenceMode){fencePts.push([x,y]);draw();return}
  if(pinMode){pinAt(x,y);return}
+ if(unpinMode){unpinAt(x,y);return}
  await post('/api/goal',{x,y});log(`goal → ${x.toFixed(2)}, ${y.toFixed(2)}`)}
 
 document.getElementById('stop').onclick=async()=>{await post('/api/stop',{});log('STOP sent')};
