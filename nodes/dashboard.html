@@ -354,6 +354,44 @@ cv.addEventListener('pointerup',async e=>{
  ptrs.delete(e.pointerId);if(ptrs.size<2)pinch0=null;if(ptrs.size==0)panStart=null;
  if(wasTap)handleTap(e)});
 cv.addEventListener('pointercancel',e=>{ptrs.delete(e.pointerId);pinch0=null;panStart=null;if(pinDrag){pinDrag=null;draw()}});
+// Pins: small numbered dots (numbers = the list on QUEUE & PLACES). Short names appear only when
+// zoomed in and only where they don't overlap another label; hover/tap a dot for its full name.
+let hoverPin=null;
+const shortName=n=>n.replace(/'s\s+desk$/i,'').replace(/\s+desk$/i,'').trim()||n;
+function drawPlaces(L){
+ const pl=S.places||[];if(!pl.length)return;
+ const taken=[];   // label boxes already drawn (canvas coords before zoom)
+ const showLabels=Z.s>=1.8;
+ cx.textBaseline='middle';
+ pl.forEach((p0,i)=>{const dragging=pinDrag&&pinDrag.p.id==p0.id;
+  const p=dragging?{...p0,x:pinDrag.x,y:pinDrag.y}:p0;
+  if(dragging){const[oa,ob]=w2p(p0.x,p0.y);cx.strokeStyle='#ffb34766';cx.lineWidth=1.5*L;cx.setLineDash([3*L,3*L]);
+   cx.beginPath();cx.moveTo(oa,ob);cx.lineTo(...w2p(p.x,p.y));cx.stroke();cx.setLineDash([])}
+  const[a,b]=w2p(p.x,p.y),hot=dragging||(hoverPin&&hoverPin.id==p0.id),r=(hot?7:5.5)*L;
+  cx.globalAlpha=hot?1:0.85;cx.fillStyle=hot?'#ffd27a':'#ffb347';cx.strokeStyle='#060a06';cx.lineWidth=1.2*L;
+  cx.beginPath();cx.arc(a,b,r,0,7);cx.fill();cx.stroke();cx.globalAlpha=1;
+  cx.fillStyle='#140d04';cx.font=`bold ${7*L}px monospace`;cx.textAlign='center';cx.fillText(String(i+1),a,b+0.5*L);
+  cx.textAlign='left';
+  if(showLabels&&!hot){const t=shortName(p.name);cx.font=`${9*L}px monospace`;
+   const w=cx.measureText(t).width,box=[a+r+2*L,b-6*L,a+r+4*L+w,b+6*L];
+   if(!taken.some(q=>box[0]<q[2]&&q[0]<box[2]&&box[1]<q[3]&&q[1]<box[3])){taken.push(box);
+    cx.fillStyle='#060a06cc';cx.fillRect(box[0],box[1],box[2]-box[0],box[3]-box[1]);
+    cx.fillStyle='#ffb347';cx.fillText(t,box[0]+1*L,b)}}});
+ // the hovered / dragged pin's full name, on top of everything
+ const hp=pinDrag?{...pinDrag.p,x:pinDrag.x,y:pinDrag.y}:hoverPin&&pl.find(q=>q.id==hoverPin.id);
+ if(hp){const[a,b]=w2p(hp.x,hp.y);const i=pl.findIndex(q=>q.id==hp.id)+1;const t=`${i} · ${hp.name}`;
+  cx.font=`bold ${11*L}px monospace`;const w=cx.measureText(t).width;
+  cx.fillStyle='#060a06ee';cx.strokeStyle='#ffb347';cx.lineWidth=1*L;
+  cx.fillRect(a+10*L,b-20*L,w+10*L,16*L);cx.strokeRect(a+10*L,b-20*L,w+10*L,16*L);
+  cx.fillStyle='#ffd27a';cx.fillText(t,a+15*L,b-12*L)}
+ cx.textBaseline='alphabetic'}
+function pinAtCanvas(e){   // the pin under the pointer (within ~12 screen px), or null
+ if(!M)return null;const r=cv.getBoundingClientRect(),[mx,my]=evCanvas(e),tol=12*cv.width/r.width;
+ let best=null,bd=1e9;(S.places||[]).forEach(p=>{const[a,b]=w2p(p.x,p.y);
+  const d=Math.hypot(Z.s*a+Z.tx-mx,Z.s*b+Z.ty-my);if(d<bd){bd=d;best=p}});return bd<=tol?best:null}
+cv.addEventListener('pointermove',e=>{if(pinDrag||poseDrag)return;
+ const h=pinAtCanvas(e);if((h&&h.id)!==(hoverPin&&hoverPin.id)){hoverPin=h;cv.style.cursor=h?'pointer':'crosshair';draw()}});
+cv.addEventListener('pointerleave',()=>{if(hoverPin){hoverPin=null;draw()}});
 function draw(){
  cx.setTransform(1,0,0,1,0,0);cx.fillStyle='#060a06';cx.fillRect(0,0,cv.width,cv.height);
  cx.setTransform(Z.s,0,0,Z.s,Z.tx,Z.ty);
@@ -381,13 +419,7 @@ function draw(){
  if(S.fence&&S.fence.length){cx.strokeStyle='#ff5566';cx.lineWidth=2*L;
   S.fence.forEach(sg=>{const[a,b]=w2p(sg[0],sg[1]),[c,d]=w2p(sg[2],sg[3]);
    cx.beginPath();cx.moveTo(a,b);cx.lineTo(c,d);cx.stroke()})}
- (S.places||[]).forEach(p0=>{const dragging=pinDrag&&pinDrag.p.id==p0.id;
-  const p=dragging?{...p0,x:pinDrag.x,y:pinDrag.y}:p0;
-  if(dragging){const[oa,ob]=w2p(p0.x,p0.y);cx.strokeStyle='#ffb34766';cx.lineWidth=1.5*L;cx.setLineDash([3*L,3*L]);
-   cx.beginPath();cx.moveTo(oa,ob);cx.lineTo(...w2p(p.x,p.y));cx.stroke();cx.setLineDash([])}
-  const[a,b]=w2p(p.x,p.y);cx.fillStyle='#ffb347';cx.beginPath();
-  cx.arc(a,b-6*L,4*L,0,7);cx.fill();cx.beginPath();cx.moveTo(a-3*L,b-4*L);cx.lineTo(a,b);cx.lineTo(a+3*L,b-4*L);cx.fill();
-  cx.font=`${10*L}px monospace`;cx.fillText(p.name,a+6*L,b-6*L)});
+ drawPlaces(L);
  if(fencePts.length){cx.strokeStyle='#ff5566';cx.setLineDash([4*L,3*L]);cx.lineWidth=2*L;cx.beginPath();
   fencePts.forEach((p,i)=>{const[a,b]=w2p(p[0],p[1]);i?cx.lineTo(a,b):cx.moveTo(a,b);});cx.stroke();
   cx.setLineDash([]);fencePts.forEach(p=>{const[a,b]=w2p(p[0],p[1]);cx.strokeRect(a-3*L,b-3*L,6*L,6*L)})}
@@ -398,6 +430,10 @@ async function handleTap(e){
  if(fenceMode){fencePts.push([x,y]);draw();return}
  if(pinMode){pinAt(x,y);return}
  if(unpinMode){unpinAt(x,y);return}
+ const tp=pinAtCanvas(e);   // a tap on a pin: show its name and ask, instead of a goal at the dot's edge
+ if(tp){hoverPin=tp;draw();
+  if(confirm(`Send the robot to "${tp.name}"?`)){await post('/api/goal',{x:tp.x,y:tp.y});log(`goal → ${tp.name}`)}
+  hoverPin=null;draw();return}
  await post('/api/goal',{x,y});log(`goal → ${x.toFixed(2)}, ${y.toFixed(2)}`)}
 
 document.getElementById('stop').onclick=async()=>{await post('/api/stop',{});log('STOP sent')};
@@ -431,7 +467,7 @@ function renderQueue(s){
  const pk=JSON.stringify(s.places||[]);if(pk!=lastP){lastP=pk;const box=document.getElementById('plist');box.textContent='';
   if(!(s.places||[]).length)box.appendChild(mk('small','no places yet: use 📍 PIN PLACE / PIN ROBOT SPOT'));
   (s.places||[]).forEach(p=>{const r=document.createElement('div');r.className='qrow';
-   r.appendChild(mk('span',`📍 ${p.name}  (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`));
+   r.appendChild(mk('span',`📍 ${(s.places||[]).indexOf(p)+1} · ${p.name}  (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`));
    const b=mk('button','✕ DELETE');b.onclick=()=>pDelete(p.id,p.name);r.appendChild(b);box.appendChild(r)})}}
 function feed(on){feedOn=on;document.getElementById('camoff').style.display=on?'none':'';
  if(!on)document.getElementById('cam').src=''}
