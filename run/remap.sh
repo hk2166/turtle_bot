@@ -318,6 +318,11 @@ if (( NAV )); then
     start_bg auto python3 nodes/auto_clear.py
     ok "idle behaviour on: boxed in + idle ~1 min → moves itself to open floor (AUTO_CLEAR=0 disables)"
   fi
+  if [[ "${UNSTICK:-1}" == 1 ]]; then
+    stop_bg unstick >/dev/null
+    start_bg unstick python3 nodes/unstick.py
+    ok "wedge escape on: lidar-guided nudge out of tight spots during a goal (UNSTICK=0 disables)"
+  fi
   stop_bg pose_keeper >/dev/null
   start_bg pose_keeper python3 nodes/pose_keeper.py --ros-args -p map:="$AREA"
   # After a reboot: the pose saved while driving, accepted only if the live scan fits the map there
