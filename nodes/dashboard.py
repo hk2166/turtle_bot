@@ -707,7 +707,7 @@ class Handler(BaseHTTPRequestHandler):
             with self.state.drive_lock:
                 lv, lw, lt = self.state.drive
                 now = time.monotonic()
-                dt = min(max(now - lt, 0.0), 0.3)       # a stream gap beyond the watchdog starts from 0
+                dt = min(max(now - lt, 0.0), 0.15)      # browser streams ~0.13 s; cap so lag can't skip the ramp
                 if now - lt > 0.35:
                     lv = lw = 0.0
                 vx = max(lv - 0.5 * dt, min(lv + 0.5 * dt, vx))
