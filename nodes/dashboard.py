@@ -11,6 +11,7 @@ The camera is opened only while someone is actually watching the feed, and relea
 """
 import json
 import math
+import socket
 import os
 import subprocess
 import re
@@ -873,6 +874,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send(404, 'text/plain', b'not here')
 
 
+class DualStackServer(ThreadingHTTPServer):
+    """IPv6 and IPv4 on one socket. resp-desktop.local resolves to both, and a Mac that tried the
+    IPv6 address found nothing listening (dashboard was IPv4-only) on the Airtel network (2026-10-13)."""
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
 def main():
     rclpy.init()
     ros = Ros()
@@ -888,11 +899,12 @@ def main():
         Handler.state.fit_msg = m
 
     Handler.queue = fleet.Queue(ros, nav, lambda: AREA, lambda: get_home(AREA),
-                                lambda: ros.pose() is not None and not pid_alive('slam'), qlog)
+                                lambda: ros.pose() is not None and not pid_alive('slam'), qlog,
+                                snap_fn=lambda x, y: snap_reachable(ros, x, y) or snap_goal(x, y))
     if not fleet.Auth.configured():
         print('no admin password yet: python3 tools/set_admin_password.py (the call page works anyway)',
               flush=True)
-    srv = ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
+    srv = DualStackServer(('::', PORT), Handler)
     print(f'dashboard on http://0.0.0.0:{PORT}  (map: {AREA})', flush=True)
     try:
         srv.serve_forever()

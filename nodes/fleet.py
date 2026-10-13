@@ -33,6 +33,12 @@ ADMIN_FILE = os.path.expanduser('~/.campus_bot/admin.yaml')
 QUEUE_FILE = os.path.expanduser('~/.campus_bot/run/queue.json')
 HOLD_FILE = os.path.expanduser('~/.campus_bot/run/hold_position')   # fresh = auto_clear stays put
 ARRIVE_WAIT = float(os.environ.get('ARRIVE_WAIT', '120'))
+# A blocked trip is retried: Nav2 already fights for ~1-2 min (12 recovery rounds, 1 Hz replans);
+# when it still gives up, the blocker is usually a person or a parked chair, which moves. So wait
+# RETRY_DELAY and try again, TRIP_TRIES attempts in all, re-snapping the goal to floor that is
+# reachable at that moment (someone standing on the exact spot moves the goal next to them).
+RETRY_DELAY = float(os.environ.get('RETRY_DELAY', '45'))
+TRIP_TRIES = int(os.environ.get('TRIP_TRIES', '3'))
 SESSION_S = 12 * 3600
 MAX_WAITING = 20
 OPEN = ('waiting', 'driving', 'arrived')
@@ -198,9 +204,10 @@ class Navigator:
 
 
 class Queue:
-    def __init__(self, ros, nav, area_fn, home_fn, ready_fn, log_fn):
+    def __init__(self, ros, nav, area_fn, home_fn, ready_fn, log_fn, snap_fn=None):
         self.ros, self.nav = ros, nav
         self.area_fn, self.home_fn, self.ready_fn, self.log = area_fn, home_fn, ready_fn, log_fn
+        self.snap_fn = snap_fn        # (x, y) -> (x', y', moved) on currently reachable floor, or None
         self.lock = threading.RLock()
         self.jobs, self.paused, self.msg, self.homing = [], False, '', False
         self._load()
@@ -248,8 +255,12 @@ class Queue:
             mine = next((j for j in reversed(self.jobs) if device and j['device'] == device), None)
             m = None
             if mine is not None and (mine['status'] in OPEN or time.time() - (mine.get('finished') or 0) < 600):
+                note = mine.get('note', '')
+                left = mine.get('not_before', 0) - time.time()
+                if mine['status'] == 'waiting' and left > 0:
+                    note = f'path blocked: retrying in {int(left)} s (try {mine["tries"] + 1}/{TRIP_TRIES})'
                 m = {'id': mine['id'], 'status': mine['status'], 'place': mine['place_name'],
-                     'pos': self._position(mine), 'note': mine.get('note', ''),
+                     'pos': self._position(mine), 'note': note,
                      'wait_left': max(0, int(ARRIVE_WAIT - (time.time() - mine['arrived'])))
                      if mine['status'] == 'arrived' else None}
             return {'robot': self.robot_status(), 'queue': lst, 'mine': m}
@@ -282,6 +293,7 @@ class Queue:
             job = {'id': secrets.token_hex(4), 'name': name, 'device': device, 'token': secrets.token_hex(12),
                    'place_id': place['id'], 'place_name': place['name'], 'x': place['x'], 'y': place['y'],
                    'yaw': place.get('yaw'), 'status': 'waiting', 'created': time.time(),
+                   'tries': 0, 'not_before': 0,
                    'started': None, 'arrived': None, 'finished': None, 'note': ''}
             self.jobs.append(job)
             self._save()
@@ -368,8 +380,18 @@ class Queue:
                     self.log(f'queue: arrived at {active["place_name"]} for {active["name"]}')
                     self._save()
                 elif r in ('aborted', 'rejected'):
-                    self._finish(active, 'failed', "couldn't reach the place (blocked?)")
-                    self.log(f'queue: trip to {active["place_name"]} for {active["name"]} failed')
+                    active['tries'] = active.get('tries', 0) + 1
+                    if active['tries'] < TRIP_TRIES:
+                        active['status'] = 'waiting'
+                        active['not_before'] = time.time() + RETRY_DELAY
+                        active['note'] = f'path blocked: retry {active["tries"] + 1}/{TRIP_TRIES}'
+                        self.log(f'queue: path to {active["place_name"]} blocked: retrying in '
+                                 f'{int(RETRY_DELAY)} s (try {active["tries"] + 1}/{TRIP_TRIES})')
+                    else:
+                        self._finish(active, 'failed',
+                                     f"couldn't reach the place in {TRIP_TRIES} tries (blocked)")
+                        self.log(f'queue: trip to {active["place_name"]} for {active["name"]} failed '
+                                 f'after {TRIP_TRIES} tries')
                     self._save()
                 elif r == 'canceled':      # someone else took the robot: back in line, paused
                     active['status'] = 'waiting'
@@ -384,8 +406,11 @@ class Queue:
                 return
             if self.paused or not self.ready_fn() or not self.nav.ready():
                 return
-            nxt = next((j for j in self.jobs if j['status'] == 'waiting'), None)
+            now = time.time()
+            nxt = next((j for j in self.jobs if j['status'] == 'waiting' and now >= j.get('not_before', 0)), None)
             if nxt is None:
+                if any(j['status'] == 'waiting' for j in self.jobs):
+                    return                 # only retries cooling down: hold position, don't go home
                 if not self.homing and any(j['status'] in ('done', 'failed', 'cancelled') and
                                            time.time() - (j['finished'] or 0) < 5 for j in self.jobs):
                     x, y, yaw, _ = self.home_fn()
@@ -394,11 +419,20 @@ class Queue:
                     self.log('queue: empty, going home')
                 return
             self.homing = False
+            gx, gy = nxt['x'], nxt['y']
+            if self.snap_fn:               # aim at floor reachable NOW (the pinned spot may be occupied)
+                try:
+                    sn = self.snap_fn(gx, gy)
+                    if sn and sn[0] is not None:
+                        gx, gy = sn[0], sn[1]
+                except Exception:
+                    pass
             pose = self.ros.pose()
             yaw = nxt['yaw'] if nxt['yaw'] is not None else (
-                math.atan2(nxt['y'] - pose[1], nxt['x'] - pose[0]) if pose else 0.0)
-            nxt['status'], nxt['started'] = 'driving', time.time()
-            self.nav.go(nxt['x'], nxt['y'], yaw)
-            self.ros.goal = (nxt['x'], nxt['y'])
-            self.log(f'queue: driving to {nxt["place_name"]} for {nxt["name"]}')
+                math.atan2(gy - pose[1], gx - pose[0]) if pose else 0.0)
+            nxt['status'], nxt['started'], nxt['note'] = 'driving', time.time(), ''
+            self.nav.go(gx, gy, yaw)
+            self.ros.goal = (gx, gy)
+            retry = f' (try {nxt["tries"] + 1}/{TRIP_TRIES})' if nxt.get('tries') else ''
+            self.log(f'queue: driving to {nxt["place_name"]} for {nxt["name"]}{retry}')
             self._save()
