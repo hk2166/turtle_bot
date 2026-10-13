@@ -228,8 +228,6 @@ class State:
         self.fit_msg = ''
         self.job = ''
         self.busy = False
-        self.drive = [0.0, 0.0, 0.0]        # last manual command (vx, wz, monotonic t) for the slew limit
-        self.drive_lock = threading.Lock()
 
     def slow(self):
         with self.lock:
@@ -697,26 +695,13 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == '/api/drive':
             # manual teleop: one Twist per POST. The browser streams while a control is held; when the
             # stream stops (release, hidden tab, WiFi drop) the firmware's 300 ms watchdog halts the robot.
-            # hard caps = the robot's limits (robot.env): top ~0.8 m/s, 1.2 rad/s.
-            # Slew limit at CLAUDE.md's 0.5 m/s^2 (1.0 rad/s^2): nav goes through the velocity smoother
-            # but manual went 0 -> slider speed in one message, and the firmware's own ~1.35 m/s^2 ramp
-            # stalled a stepper near its torque limit at high speed (right motor judder, 2026-10-13).
-            # The STOP button / watchdog / bumper are unchanged (they act in the firmware).
+            # hard caps = the robot's limits (robot.env): top ~0.8 m/s, 1.2 rad/s; firmware ramps accel
             vx = max(-0.8, min(0.8, float(body.get('vx', 0.0))))
             wz = max(-1.2, min(1.2, float(body.get('wz', 0.0))))
-            with self.state.drive_lock:
-                lv, lw, lt = self.state.drive
-                now = time.monotonic()
-                dt = min(max(now - lt, 0.0), 0.15)      # browser streams ~0.13 s; cap so lag can't skip the ramp
-                if now - lt > 0.35:
-                    lv = lw = 0.0
-                vx = max(lv - 0.5 * dt, min(lv + 0.5 * dt, vx))
-                wz = max(lw - 1.0 * dt, min(lw + 1.0 * dt, wz))
-                self.state.drive = [vx, wz, now]
             t = Twist()
             t.linear.x, t.angular.z = vx, wz
             self.ros.pub_stop.publish(t)
-            self.send(200, 'application/json', json.dumps({'ok': True, 'vx': round(vx, 3), 'wz': round(wz, 3)}).encode())
+            self.send(200, 'application/json', b'{"ok":true}')
         elif self.path == '/api/goal':
             # Snap the click to the nearest spot the robot can actually reach: a click a little
             # inside a desk, a wall, the fence or a sealed-off pocket used to make Nav2 fail the
