@@ -665,6 +665,14 @@ class Handler(BaseHTTPRequestHandler):
             place, msg = fleet.add_place(AREA, body.get('name', ''), x, y, yaw)
             self.state.fit_msg = msg
             self.json({'ok': place is not None, 'msg': msg})
+        elif self.path == '/api/places/move':
+            snapped = snap_reachable(self.ros, body['x'], body['y']) or snap_goal(body['x'], body['y'])
+            if snapped is None or snapped[0] is None:
+                self.json({'ok': False, 'msg': 'no reachable floor near there: pin not moved'})
+                return
+            place, msg = fleet.move_place(AREA, body.get('id'), snapped[0], snapped[1])
+            self.state.fit_msg = msg
+            self.json({'ok': place is not None, 'msg': msg})
         elif self.path == '/api/places/delete':
             self.json({'ok': fleet.delete_place(AREA, body.get('id'))})
         elif self.path == '/api/queue/cancel':

@@ -115,6 +115,18 @@ def add_place(area, name, x, y, yaw=None):
     return p, f'pinned "{name}" at ({p["x"]:.2f}, {p["y"]:.2f})'
 
 
+def move_place(area, pid, x, y):
+    """Admin dragged a pin: new spot, same name/id. The facing is dropped (set again with PIN ROBOT
+    SPOT if it matters); requests already in the queue keep the spot they were made for."""
+    places = load_places(area)
+    p = next((p for p in places if p['id'] == pid), None)
+    if p is None:
+        return None, 'that pin no longer exists'
+    p.update(x=round(float(x), 3), y=round(float(y), 3), yaw=None)
+    save_places(area, places)
+    return p, f'moved "{p["name"]}" to ({p["x"]:.2f}, {p["y"]:.2f})'
+
+
 def delete_place(area, pid):
     places = load_places(area)
     keep = [p for p in places if p['id'] != pid]

@@ -64,6 +64,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 #fenceb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #pinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
 #unpinb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
+#movepinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
 .qrow{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed var(--line)}
 .qrow span{flex:1}
 .qrow button{padding:3px 8px;font-size:10px;letter-spacing:1px}
@@ -124,6 +125,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    <button onclick="fenceClear()" title="delete ALL fence lines of this map (re-draw from scratch)">⌫ CLEAR FENCE</button>
    <button id="pinb" onclick="pinBtn()" title="click the map where a named place should be (desk, pantry...)">📍 PIN PLACE</button>
    <button onclick="pinHere()" title="name the spot where the robot stands now (most precise: drive it there first)">📍 PIN ROBOT SPOT</button>
+   <button id="movepinb" onclick="movePinBtn()" title="then press on a pin and drag it to the right spot">✥ MOVE PIN</button>
    <button id="unpinb" onclick="unpinBtn()" title="then tap a pin on the map to delete it">✕ REMOVE PIN</button>
    <small id="fit"></small>
   </div>
@@ -248,9 +250,21 @@ window.addEventListener('resize',fitCanvas);
 const img=new Image(); img.id='mapimg'; img.src='/map.png';
 img.onload=()=>{cv.width=img.width;cv.height=img.height;fitCanvas();draw()};
 let M=null,S={},poseDrag=null,feedOn=true,armPose=false,fenceMode=false,fencePts=[],pinMode=false;
-let unpinMode=false;
-function unpinBtn(){unpinMode=!unpinMode;document.getElementById('unpinb').classList.toggle('armed',unpinMode);
- if(unpinMode){pinMode=false;document.getElementById('pinb').classList.remove('armed');
+let unpinMode=false,movePinMode=false,pinDrag=null;
+function disarmPins(except){
+ if(except!='pin'){pinMode=false;document.getElementById('pinb').classList.remove('armed')}
+ if(except!='unpin'){unpinMode=false;document.getElementById('unpinb').classList.remove('armed')}
+ if(except!='move'){movePinMode=false;document.getElementById('movepinb').classList.remove('armed')}}
+function movePinBtn(){const on=!movePinMode;disarmPins('move');movePinMode=on;
+ document.getElementById('movepinb').classList.toggle('armed',on);
+ if(on)log((S.places||[]).length?'MOVE PIN: press on a pin and drag it to the right spot':'MOVE PIN: there are no pins on this map')}
+function nearestPin(x,y){let best=null,bd=1e9;
+ (S.places||[]).forEach(p=>{const d=Math.hypot(p.x-x,p.y-y);if(d<bd){bd=d;best=p}});return bd<=1.0?best:null}
+async function dropPin(){const d=pinDrag;pinDrag=null;disarmPins();
+ if(Math.hypot(d.x-d.p.x,d.y-d.p.y)<0.05){log('MOVE PIN: not moved');draw();return}
+ const r=await(await post('/api/places/move',{id:d.p.id,x:d.x,y:d.y})).json();log(r.msg);draw()}
+function unpinBtn(){const on=!unpinMode;disarmPins('unpin');unpinMode=on;document.getElementById('unpinb').classList.toggle('armed',on);
+ if(unpinMode){
   log((S.places||[]).length?'REMOVE PIN: tap the pin to delete':'REMOVE PIN: there are no pins on this map')}}
 async function unpinAt(x,y){
  // the pin nearest to the tap, if it's within ~1 m (zoomed out, a tap is never exact)
@@ -260,8 +274,7 @@ async function unpinAt(x,y){
  if(!confirm(`Delete the place "${best.name}"? Colleagues can no longer call the robot there.`))return;
  const r=await(await post('/api/places/delete',{id:best.id})).json();
  log(r.ok?`pin "${best.name}" removed`:'could not remove the pin')}
-function pinBtn(){pinMode=!pinMode;document.getElementById('pinb').classList.toggle('armed',pinMode);
- if(pinMode){unpinMode=false;document.getElementById('unpinb').classList.remove('armed')}
+function pinBtn(){const on=!pinMode;disarmPins('pin');pinMode=on;document.getElementById('pinb').classList.toggle('armed',on);
  if(pinMode)log('PIN PLACE: click the map where the place is (it snaps to reachable floor)')}
 async function pinAt(x,y){pinMode=false;document.getElementById('pinb').classList.remove('armed');
  const name=prompt('Name for this place (shown to everyone on the call page):');if(!name)return;
@@ -307,12 +320,17 @@ cv.addEventListener('dblclick',()=>{Z={s:1,tx:0,ty:0};draw()});
 let ptrs=new Map(),panStart=null,moved=0,pinch0=null;
 cv.style.touchAction='none';
 cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);
+ if(movePinMode&&M){const r=cv.getBoundingClientRect();const[wx,wy]=p2w(e.clientX-r.left,e.clientY-r.top);
+  const p=nearestPin(wx,wy);
+  if(p){pinDrag={p,x:p.x,y:p.y};draw();return}
+  log('MOVE PIN: press closer to a pin');return}   // a missed grab must never become a map goal
  if((armPose||e.shiftKey)&&!fenceMode&&M){const r=cv.getBoundingClientRect();
   const w=p2w(e.clientX-r.left,e.clientY-r.top);poseDrag={a:w,b:w};draw();return}
  ptrs.set(e.pointerId,[e.clientX,e.clientY]);moved=0;
  if(ptrs.size==1)panStart={x:e.clientX,y:e.clientY,tx:Z.tx,ty:Z.ty};
  if(ptrs.size==2){const a=[...ptrs.values()];pinch0={d:Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]),s:Z.s}}});
 cv.addEventListener('pointermove',e=>{
+ if(pinDrag){const r=cv.getBoundingClientRect();[pinDrag.x,pinDrag.y]=p2w(e.clientX-r.left,e.clientY-r.top);draw();return}
  if(poseDrag){const r=cv.getBoundingClientRect();
   poseDrag.b=p2w(e.clientX-r.left,e.clientY-r.top);draw();return}
  if(!ptrs.has(e.pointerId))return;
@@ -324,6 +342,7 @@ cv.addEventListener('pointermove',e=>{
   if(moved>6){const r=cv.getBoundingClientRect();
    Z.tx=panStart.tx+dx*cv.width/r.width;Z.ty=panStart.ty+dy*cv.height/r.height;clampZ();draw()}}});
 cv.addEventListener('pointerup',async e=>{
+ if(pinDrag){dropPin();return}
  if(poseDrag){const d=poseDrag;poseDrag=null;armPose=false;
   document.getElementById('setpose').classList.remove('armed');
   const dx=d.b[0]-d.a[0],dy=d.b[1]-d.a[1];
@@ -334,7 +353,7 @@ cv.addEventListener('pointerup',async e=>{
  const wasTap=moved<=6&&ptrs.size==1;
  ptrs.delete(e.pointerId);if(ptrs.size<2)pinch0=null;if(ptrs.size==0)panStart=null;
  if(wasTap)handleTap(e)});
-cv.addEventListener('pointercancel',e=>{ptrs.delete(e.pointerId);pinch0=null;panStart=null});
+cv.addEventListener('pointercancel',e=>{ptrs.delete(e.pointerId);pinch0=null;panStart=null;if(pinDrag){pinDrag=null;draw()}});
 function draw(){
  cx.setTransform(1,0,0,1,0,0);cx.fillStyle='#060a06';cx.fillRect(0,0,cv.width,cv.height);
  cx.setTransform(Z.s,0,0,Z.s,Z.tx,Z.ty);
@@ -362,7 +381,11 @@ function draw(){
  if(S.fence&&S.fence.length){cx.strokeStyle='#ff5566';cx.lineWidth=2*L;
   S.fence.forEach(sg=>{const[a,b]=w2p(sg[0],sg[1]),[c,d]=w2p(sg[2],sg[3]);
    cx.beginPath();cx.moveTo(a,b);cx.lineTo(c,d);cx.stroke()})}
- (S.places||[]).forEach(p=>{const[a,b]=w2p(p.x,p.y);cx.fillStyle='#ffb347';cx.beginPath();
+ (S.places||[]).forEach(p0=>{const dragging=pinDrag&&pinDrag.p.id==p0.id;
+  const p=dragging?{...p0,x:pinDrag.x,y:pinDrag.y}:p0;
+  if(dragging){const[oa,ob]=w2p(p0.x,p0.y);cx.strokeStyle='#ffb34766';cx.lineWidth=1.5*L;cx.setLineDash([3*L,3*L]);
+   cx.beginPath();cx.moveTo(oa,ob);cx.lineTo(...w2p(p.x,p.y));cx.stroke();cx.setLineDash([])}
+  const[a,b]=w2p(p.x,p.y);cx.fillStyle='#ffb347';cx.beginPath();
   cx.arc(a,b-6*L,4*L,0,7);cx.fill();cx.beginPath();cx.moveTo(a-3*L,b-4*L);cx.lineTo(a,b);cx.lineTo(a+3*L,b-4*L);cx.fill();
   cx.font=`${10*L}px monospace`;cx.fillText(p.name,a+6*L,b-6*L)});
  if(fencePts.length){cx.strokeStyle='#ff5566';cx.setLineDash([4*L,3*L]);cx.lineWidth=2*L;cx.beginPath();
