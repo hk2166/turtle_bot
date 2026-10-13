@@ -326,7 +326,13 @@ if (( NAV )); then
   if [[ -z "$POSE" && -f "$LAST" ]] && ! python3 tools/pose_tool.py probe map base_link --timeout 1; then
     read -r LX LY LYAW < <(python3 -c 'import sys,yaml,math; d=yaml.safe_load(open(sys.argv[1])); print(d["x"], d["y"], math.degrees(d["yaw"]))' "$LAST")
     if FIT=$(python3 tools/fit_pose.py "$LX" "$LY" "$LYAW" --radius 1.0 --angle 25 2>/dev/null) \
-       && read -r FX FY FYAW FSC <<<"$FIT" && python3 -c "import sys; sys.exit(float(sys.argv[1]) < 0.7)" "$FSC"; then
+       && read -r FX FY FYAW FSC <<<"$FIT" \
+       && python3 -c '
+import math, sys
+fx, fy, fyaw, sc, lx, ly, lyaw = map(float, sys.argv[1:])
+near = math.hypot(fx - lx, fy - ly) < 0.25 and abs((fyaw - math.radians(lyaw) + math.pi) % (2 * math.pi) - math.pi) < math.radians(10)
+# where the robot was saved AND where the walls fit agree: 60% is enough; a fit elsewhere needs 70%
+sys.exit(0 if sc >= (0.6 if near else 0.7) else 1)' "$FX" "$FY" "$FYAW" "$FSC" "$LX" "$LY" "$LYAW"; then
       if python3 tools/pose_tool.py set "$FX" "$FY" "$FYAW"; then
         ok "pose restored from before the restart: ($FX, $FY), lidar agrees ($FSC of the scan on walls)"
       else
