@@ -65,6 +65,10 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 #pinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
 #unpinb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #movepinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
+/* a pin's full name: an HTML label over the map, so it's crisp and never clipped by the canvas */
+#pintip{position:fixed;z-index:5;pointer-events:none;display:none;white-space:nowrap;
+  background:#060a06f2;border:1px solid var(--warn);color:#ffd27a;font-weight:bold;font-size:12px;
+  padding:3px 8px;border-radius:4px;box-shadow:0 0 10px #000}
 .qrow{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed var(--line)}
 .qrow span{flex:1}
 .qrow button{padding:3px 8px;font-size:10px;letter-spacing:1px}
@@ -173,6 +177,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    stops the robot within 0.3 s (motor watchdog). Entering this tab cancels any map goal.</small></div>
  </div>
 </div>
+<div id="pintip"></div>
 <div class="grid" id="view-queue" style="display:none">
  <div class="panel">
   <h2>CALL QUEUE — anyone on the office WiFi: <span id="calllink"></span></h2>
@@ -190,7 +195,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 </div>
 <script>
 let view='mission';
-async function setView(v,btn){view=v;setTimeout(fitCanvas,50);
+async function setView(v,btn){view=v;setTimeout(fitCanvas,50);hoverPin=null;document.getElementById('pintip').style.display='none';
  document.getElementById('view-mission').style.display=v=='mission'?'':'none';
  document.getElementById('view-manual').style.display=v=='manual'?'':'none';
  document.getElementById('view-queue').style.display=v=='queue'?'':'none';
@@ -359,7 +364,7 @@ cv.addEventListener('pointercancel',e=>{ptrs.delete(e.pointerId);pinch0=null;pan
 let hoverPin=null;
 const shortName=n=>n.replace(/'s\s+desk$/i,'').replace(/\s+desk$/i,'').trim()||n;
 function drawPlaces(L){
- const pl=S.places||[];if(!pl.length)return;
+ const pl=S.places||[];if(!pl.length){document.getElementById('pintip').style.display='none';return}
  const taken=[];   // label boxes already drawn (canvas coords before zoom)
  const showLabels=Z.s>=1.8;
  cx.textBaseline='middle';
@@ -373,17 +378,23 @@ function drawPlaces(L){
   cx.fillStyle='#140d04';cx.font=`bold ${7*L}px monospace`;cx.textAlign='center';cx.fillText(String(i+1),a,b+0.5*L);
   cx.textAlign='left';
   if(showLabels&&!hot){const t=shortName(p.name);cx.font=`${9*L}px monospace`;
-   const w=cx.measureText(t).width,box=[a+r+2*L,b-6*L,a+r+4*L+w,b+6*L];
+   const w=cx.measureText(t).width,right=(cv.width-Z.tx)/Z.s;
+   let box=[a+r+2*L,b-6*L,a+r+4*L+w,b+6*L];
+   if(box[2]>right-2*L)box=[a-r-4*L-w,b-6*L,a-r-2*L,b+6*L];   // no room on the right: label on the left
    if(!taken.some(q=>box[0]<q[2]&&q[0]<box[2]&&box[1]<q[3]&&q[1]<box[3])){taken.push(box);
     cx.fillStyle='#060a06cc';cx.fillRect(box[0],box[1],box[2]-box[0],box[3]-box[1]);
     cx.fillStyle='#ffb347';cx.fillText(t,box[0]+1*L,b)}}});
- // the hovered / dragged pin's full name, on top of everything
+ // the hovered / dragged pin's full name, as an HTML label next to the dot
+ const tip=document.getElementById('pintip');
  const hp=pinDrag?{...pinDrag.p,x:pinDrag.x,y:pinDrag.y}:hoverPin&&pl.find(q=>q.id==hoverPin.id);
- if(hp){const[a,b]=w2p(hp.x,hp.y);const i=pl.findIndex(q=>q.id==hp.id)+1;const t=`${i} · ${hp.name}`;
-  cx.font=`bold ${11*L}px monospace`;const w=cx.measureText(t).width;
-  cx.fillStyle='#060a06ee';cx.strokeStyle='#ffb347';cx.lineWidth=1*L;
-  cx.fillRect(a+10*L,b-20*L,w+10*L,16*L);cx.strokeRect(a+10*L,b-20*L,w+10*L,16*L);
-  cx.fillStyle='#ffd27a';cx.fillText(t,a+15*L,b-12*L)}
+ if(hp&&view=='mission'){const[a,b]=w2p(hp.x,hp.y),rc=cv.getBoundingClientRect();
+  const sx=rc.left+(Z.s*a+Z.tx)*rc.width/cv.width, sy=rc.top+(Z.s*b+Z.ty)*rc.height/cv.height;
+  tip.textContent=`${pl.findIndex(q=>q.id==hp.id)+1} · ${hp.name}`;tip.style.display='block';
+  const w=tip.offsetWidth,h=tip.offsetHeight;
+  let x=sx+14; if(x+w>innerWidth-6)x=sx-14-w;          // flip to the left near the right edge
+  let y=sy-h-8; if(y<6)y=sy+12;                          // below the dot near the top
+  tip.style.left=Math.max(6,x)+'px';tip.style.top=Math.min(innerHeight-h-6,y)+'px'}
+ else tip.style.display='none';
  cx.textBaseline='alphabetic'}
 function pinAtCanvas(e){   // the pin under the pointer (within ~12 screen px), or null
  if(!M)return null;const r=cv.getBoundingClientRect(),[mx,my]=evCanvas(e),tol=12*cv.width/r.width;
