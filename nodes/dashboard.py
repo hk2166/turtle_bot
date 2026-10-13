@@ -492,7 +492,8 @@ CALL_PAGE = open(os.path.join(PROJECT, 'nodes', 'call.html'), 'rb').read()
 LOGIN_PAGE = open(os.path.join(PROJECT, 'nodes', 'login.html'), 'rb').read()
 # Open to anyone on the WiFi: the call page and what it needs. Everything else is admin-only.
 # '/' is the call page for everyone; mission control lives at /admin (login: ⚙ ADMIN, bottom right)
-PUBLIC_GET = ('/', '/call', '/login', '/api/places', '/api/queue')
+# The camera preview is view-only and public too: the call page shows what the robot sees.
+PUBLIC_GET = ('/', '/call', '/login', '/api/places', '/api/queue', '/frame.jpg')
 PUBLIC_POST = ('/api/login', '/api/request', '/api/request/cancel', '/api/request/done')
 # admin actions that take the robot away from the queue (it pauses, a trip in progress goes back in front)
 TAKES_CONTROL = {'/api/goal': 'map goal', '/api/stop': 'STOP', '/api/drive': 'manual drive',
@@ -533,6 +534,15 @@ class Handler(BaseHTTPRequestHandler):
         # the robot itself (scripts, curl on the Pi) is trusted; everyone else needs a login
         return self.client_address[0] in ('127.0.0.1', '::1', '::ffff:127.0.0.1') or self.auth.valid(self.token())
 
+    def frame(self):
+        jpg, err = self.cam.get()
+        if not jpg and self.ros.cam_jpg and time.time() - self.ros.cam_t < 3.0:
+            jpg = self.ros.cam_jpg          # camera_node owns the device: use its published preview
+        if jpg:
+            self.send(200, 'image/jpeg', jpg)
+        else:
+            self.send(503, 'text/plain', err or b'warming up')
+
     def do_GET(self):
         route = self.path.split('?')[0]
         if route in ('/', '/index.html', '/call'):
@@ -550,6 +560,9 @@ class Handler(BaseHTTPRequestHandler):
         if route == '/api/queue':
             dev = self.path.split('device=')[1].split('&')[0] if 'device=' in self.path else ''
             self.json(self.queue.public_view(dev))
+            return
+        if route == '/frame.jpg':
+            self.frame()
             return
         if not self.is_admin():
             if route == '/admin':
@@ -604,14 +617,6 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         lines.append(ln2[:150])
             self.send(200, 'text/plain; charset=utf-8', '\n'.join(lines).encode())
-        elif self.path.startswith('/frame.jpg'):
-            jpg, err = self.cam.get()
-            if not jpg and self.ros.cam_jpg and time.time() - self.ros.cam_t < 3.0:
-                jpg = self.ros.cam_jpg          # camera_node owns the device: use its published preview
-            if jpg:
-                self.send(200, 'image/jpeg', jpg)
-            else:
-                self.send(503, 'text/plain', err or b'warming up')
         else:
             self.send(404, 'text/plain', b'not here')
 

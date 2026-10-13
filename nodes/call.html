@@ -21,7 +21,17 @@ button.bad{border-color:var(--bad);color:var(--bad);text-align:center}
 #status{font-size:17px}
 .dim{color:var(--dim);font-size:13px}
 .warn{color:var(--warn)}.badc{color:var(--bad)}
-ol{padding-left:22px}li{margin:3px 0}
+#camwrap{aspect-ratio:16/9;background:#000;border:1px solid var(--line);border-radius:5px;
+  display:flex;align-items:center;justify-content:center;overflow:hidden}
+#cam{width:100%;height:100%;object-fit:contain;display:none}
+#camoff{color:var(--dim);font-size:13px}
+.q{display:flex;gap:10px;align-items:baseline;padding:7px 4px;border-bottom:1px dashed var(--line)}
+.q:last-child{border-bottom:none}
+.q .who{flex:1}
+.q .st{font-size:12px;color:var(--dim);white-space:nowrap}
+.q.now{background:#13240f;border-radius:5px}
+.q.now .st{color:var(--warn)}
+.q.me .who{text-decoration:underline}
 #err{color:var(--bad);min-height:1.4em;margin-top:8px;font-size:13px}
 /* admin entry: small, out of the way, bottom-right corner */
 #adminbtn{position:fixed;right:12px;bottom:12px;width:auto;margin:0;padding:7px 12px;font-size:12px;
@@ -33,8 +43,8 @@ body{padding-bottom:64px}
 <h1>▚ CALL THE CAMPUS BOT</h1>
 
 <div class="card">
- <h2>YOUR NAME</h2>
- <input id="name" maxlength="40" placeholder="e.g. Priya" autocomplete="name">
+ <h2>ROBOT'S VIEW · <span id="robot">…</span></h2>
+ <div id="camwrap"><img id="cam" alt="live view from the robot"><span id="camoff">connecting…</span></div>
 </div>
 
 <div class="card" id="mycard" style="display:none">
@@ -45,16 +55,17 @@ body{padding-bottom:64px}
  <button class="bad" id="cancel" onclick="cancelMine()">✕ CANCEL MY REQUEST</button>
 </div>
 
-<div class="card" id="placecard">
- <h2>CALL THE ROBOT TO…</h2>
- <div id="places" class="dim">loading…</div>
- <div id="err"></div>
+<div class="card">
+ <h2>QUEUE · <span id="qcount">…</span></h2>
+ <div id="queue"></div>
+ <div class="dim" id="qempty">Nobody waiting: call the robot below.</div>
 </div>
 
-<div class="card">
- <h2>QUEUE · <span id="robot">…</span></h2>
- <ol id="queue"></ol>
- <div class="dim" id="qempty">nobody waiting</div>
+<div class="card" id="placecard">
+ <h2>CALL THE ROBOT TO…</h2>
+ <input id="name" maxlength="40" placeholder="Your name (e.g. Priya)" autocomplete="name">
+ <div id="places" class="dim" style="margin-top:6px">loading…</div>
+ <div id="err"></div>
 </div>
 <a id="adminbtn" href="/login" title="robot admin (password)">⚙ ADMIN</a>
 
@@ -91,8 +102,14 @@ async function poll(){
  try{const d=await api('/api/queue?device='+encodeURIComponent(device));
   $('robot').textContent=LABEL[d.robot]||d.robot;$('robot').className=d.robot=='ready'?'':d.robot=='busy'?'warn':'badc';
   const q=$('queue');q.textContent='';
-  d.queue.forEach(j=>q.appendChild(el('li',`${j.name} → ${j.place}  [${j.status=='waiting'?'#'+j.pos:j.status}]`)));
+  const ST={driving:'🚗 on the way',arrived:'📦 arrived'};
+  d.queue.forEach(j=>{const r=document.createElement('div');
+   r.className='q'+(j.status=='waiting'?'':' now')+(d.mine&&d.mine.id==j.id?' me':'');
+   r.appendChild(el('span',j.name+' → '+j.place,'who'));
+   r.appendChild(el('span',ST[j.status]||('#'+j.pos+' in line'),'st'));q.appendChild(r)});
   $('qempty').style.display=d.queue.length?'none':'';
+  const waiting=d.queue.filter(j=>j.status=='waiting').length;
+  $('qcount').textContent=d.queue.length?`${waiting} waiting`+(d.queue.length>waiting?' · 1 trip in progress':''):'empty';
   const m=d.mine, open=m&&['waiting','driving','arrived'].includes(m.status);
   $('mycard').style.display=m?'':'none';$('placecard').style.display=open?'none':'';
   if(m){
@@ -109,5 +126,12 @@ async function poll(){
   }
  }catch(_){$('robot').textContent='robot not reachable'}
  setTimeout(poll,2000)}
-loadPlaces();poll();
+async function pollCam(){
+ if(!document.hidden){try{const r=await fetch('/frame.jpg?'+Date.now());
+  if(r.ok){const u=URL.createObjectURL(await r.blob()),c=$('cam');c.onload=()=>URL.revokeObjectURL(u);c.src=u;
+   c.style.display='block';$('camoff').style.display='none'}
+  else{$('cam').style.display='none';$('camoff').style.display='';$('camoff').textContent='camera off right now'}}
+ catch(_){$('cam').style.display='none';$('camoff').style.display='';$('camoff').textContent='robot not reachable'}}
+ setTimeout(pollCam,document.hidden?1500:250)}   // ~4 fps for everyone; the admin page gets more
+loadPlaces();poll();pollCam();
 </script></body></html>
