@@ -652,10 +652,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self.is_admin():
             self.send(401, 'text/plain', b'admin login required')
             return
-        if self.path in TAKES_CONTROL:
+        # manual drive: only a real motion command takes control. The manual tab streams zeros while
+        # nothing is held, and each one used to cancel the queue's trip and re-pause the queue.
+        if self.path in TAKES_CONTROL and not (self.path == '/api/drive' and not (
+                float(body.get('vx', 0) or 0) or float(body.get('wz', 0) or 0))):
             self.queue.admin_took_control(TAKES_CONTROL[self.path])
         if self.path in ('/api/use_map', '/api/map_start'):
-            self.queue.clear('map changed: open requests cancelled (places belong to the old map)')
+            self.queue.clear('map changed: open requests cancelled (places belong to the old map)', go_home=False)
         if self.path == '/api/logout':
             self.auth.logout(self.token())
             self.json({'ok': True}, headers=(('Set-Cookie', 'cb_admin=; Path=/; Max-Age=0'),))

@@ -210,10 +210,13 @@ class Queue:
         self.snap_fn = snap_fn        # (x, y) -> (x', y', moved) on currently reachable floor, or None
         self.lock = threading.RLock()
         self.jobs, self.paused, self.msg, self.homing = [], False, '', False
+        self.want_home = False         # a trip ended: drive home once the robot is free (not only within 5 s)
         self._load()
         for j in self.jobs:            # a restart mid-trip: that trip starts again from the front
-            if j['status'] in ('driving', 'arrived'):
+            if j['status'] == 'driving':
                 j['status'] = 'waiting'
+            elif j['status'] == 'arrived':     # already delivered: don't drive back to them
+                self._finish(j, 'done', 'dashboard restarted while waiting for GOT IT')
         threading.Thread(target=self._run, daemon=True).start()
 
     # ---- persistence
@@ -226,7 +229,10 @@ class Queue:
 
     def _save(self):
         os.makedirs(os.path.dirname(QUEUE_FILE), exist_ok=True)
-        done = [j for j in self.jobs if j['status'] not in OPEN][-30:]
+        # finished jobs oldest-first by finish time, so the trim drops the OLDEST (the open jobs are
+        # kept in front, which used to leave the finished ones newest-first and trim the newest)
+        done = sorted((j for j in self.jobs if j['status'] not in OPEN),
+                      key=lambda j: j.get('finished') or 0)[-30:]
         self.jobs = [j for j in self.jobs if j['status'] in OPEN] + done
         with open(QUEUE_FILE + '.tmp', 'w') as f:
             json.dump({'jobs': self.jobs, 'paused': self.paused}, f)
@@ -246,13 +252,16 @@ class Queue:
             return 'paused'
         if not self.ready_fn():
             return 'offline'
-        return 'busy' if any(j['status'] in ('driving', 'arrived') for j in self.jobs) else 'ready'
+        return 'busy' if any(j['status'] in OPEN for j in self.jobs) else 'ready'
 
     def public_view(self, device=''):
         with self.lock:
             lst = [{'id': j['id'], 'name': j['name'], 'place': j['place_name'], 'status': j['status'],
                     'pos': self._position(j)} for j in self._open()]
-            mine = next((j for j in reversed(self.jobs) if device and j['device'] == device), None)
+            # this device's open request, else its most recent one (list order is NOT creation order)
+            own = [j for j in self.jobs if device and j['device'] == device]
+            mine = next((j for j in own if j['status'] in OPEN), None) or \
+                max(own, key=lambda j: j.get('created') or 0, default=None)
             m = None
             if mine is not None and (mine['status'] in OPEN or time.time() - (mine.get('finished') or 0) < 600):
                 note = mine.get('note', '')
@@ -269,7 +278,14 @@ class Queue:
         with self.lock:
             return {'paused': self.paused, 'msg': self.msg, 'robot': self.robot_status(),
                     'jobs': [{k: j.get(k) for k in ('id', 'name', 'place_name', 'status', 'created', 'note')}
-                             | {'pos': self._position(j)} for j in self.jobs[-25:]]}
+                             | {'pos': self._position(j)} for j in self._recent(25)]}
+
+    def _recent(self, n):
+        """All open jobs plus the newest finished ones, oldest first, n in all (open never cut off)."""
+        opn = self._open()
+        done = sorted((j for j in self.jobs if j['status'] not in OPEN), key=lambda j: j.get('finished') or 0)
+        keep = opn + (done[-(n - len(opn)):] if n > len(opn) else [])
+        return sorted(keep, key=lambda j: j.get('created') or 0)
 
     # ---- user actions
     def request(self, name, place_id, device):
@@ -302,6 +318,7 @@ class Queue:
 
     def _finish(self, job, status, note=''):
         job['status'], job['note'], job['finished'] = status, note, time.time()
+        self.want_home = True
 
     def cancel(self, jid, token=None, admin=False):
         with self.lock:
@@ -325,7 +342,7 @@ class Queue:
             return True
 
     # ---- admin actions
-    def clear(self, note='queue cleared by the admin'):
+    def clear(self, note='queue cleared by the admin', go_home=True):
         with self.lock:
             n = 0
             for j in self._open():
@@ -333,6 +350,8 @@ class Queue:
                     self.nav.cancel()
                 self._finish(j, 'cancelled', note)
                 n += 1
+            if not go_home:            # map switch: the old map's home means nothing now
+                self.want_home = False
             self._save()
             self.log(f'queue: {note} ({n} request(s))')
             return n
@@ -346,7 +365,7 @@ class Queue:
     def admin_took_control(self, what):
         """The admin drove/stopped/re-targeted the robot: pause, and put a trip in progress back in front."""
         with self.lock:
-            self.homing = False
+            self.homing = self.want_home = False
             for j in self.jobs:
                 if j['status'] == 'driving':
                     self.nav.cancel()
@@ -393,8 +412,11 @@ class Queue:
                         self.log(f'queue: trip to {active["place_name"]} for {active["name"]} failed '
                                  f'after {TRIP_TRIES} tries')
                     self._save()
-                elif r == 'canceled':      # someone else took the robot: back in line, paused
-                    active['status'] = 'waiting'
+                elif r == 'canceled':      # someone else (RViz, a script) took the robot: back in line, paused
+                    active['status'], active['started'] = 'waiting', None
+                    self.paused = True
+                    self.msg = 'paused: the trip was cancelled outside the queue. RESUME QUEUE when done'
+                    self.log(f'queue: {self.msg}')
                     self._save()
                 return
             if active and active['status'] == 'arrived':
@@ -411,14 +433,13 @@ class Queue:
             if nxt is None:
                 if any(j['status'] == 'waiting' for j in self.jobs):
                     return                 # only retries cooling down: hold position, don't go home
-                if not self.homing and any(j['status'] in ('done', 'failed', 'cancelled') and
-                                           time.time() - (j['finished'] or 0) < 5 for j in self.jobs):
+                if self.want_home and not self.homing:
                     x, y, yaw, _ = self.home_fn()
                     self.nav.go(x, y, yaw)
-                    self.homing = True
+                    self.homing, self.want_home = True, False
                     self.log('queue: empty, going home')
                 return
-            self.homing = False
+            self.homing = self.want_home = False
             gx, gy = nxt['x'], nxt['y']
             if self.snap_fn:               # aim at floor reachable NOW (the pinned spot may be occupied)
                 try:

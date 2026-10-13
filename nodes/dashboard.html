@@ -226,7 +226,11 @@ setInterval(()=>{if(view!='manual'||document.hidden)return;
   vx=y>0?y*sp:y*sp*0.5; wz=-x*0.9;
   document.getElementById('joyv').textContent=
    (vx>=0?'▲ ':'▼ ')+Math.abs(vx).toFixed(2)+' m/s · turn '+(wz>0?'◀ ':wz<0?'▶ ':'')+Math.abs(wz).toFixed(2);}
+ // idle: a few stops after release, then silence, so an open manual tab doesn't keep zeroing
+ // /cmd_vel under a queue trip or a map goal
+ if(!vx&&!wz){if(idleSent>=3)return;idleSent++}else idleSent=0;
  post('/api/drive',{vx, wz});},130);
+let idleSent=0;
 document.addEventListener('pointerup',()=>{if(!document.querySelector('.padb:active'))held={f:0,b:0,l:0,r:0}});
 window.addEventListener('load',()=>{
  document.querySelectorAll('.padb[data-k]').forEach(b=>{
