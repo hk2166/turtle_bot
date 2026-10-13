@@ -863,8 +863,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.ros.send_pose(fx, fy, fyaw)
                     self.state.fit_msg = f'pose refreshed: {fx:.2f}, {fy:.2f} @ {math.degrees(fyaw):.0f}° ({score:.0%} on walls)'
                 else:
+                    # search around a spot that is ON this map: where the robot thinks it is, else
+                    # its last saved pose, else HOME. The old default, the mapping start (0,0), is
+                    # off the asdf3 map and got set as the pose when the fit failed (2026-10-13).
+                    gx, gy, gyaw = pose_now if pose_now else (None, None, None)
+                    if gx is None:
+                        try:
+                            lp = yaml.safe_load(open(os.path.expanduser(f'~/.campus_bot/run/last_pose_{AREA}.yaml')))
+                            gx, gy, gyaw = float(lp['x']), float(lp['y']), float(lp['yaw'])
+                        except (OSError, KeyError, TypeError, ValueError):
+                            gx, gy, gyaw, _ = get_home(AREA)
                     r = subprocess.run(['bash', os.path.join(PROJECT, 'run', 'reset_pose.sh')] +
-                                       (['--wide'] if mode == 'wide' else []),
+                                       (['--wide'] if mode == 'wide' else []) +
+                                       [f'{gx:.3f}', f'{gy:.3f}', f'{math.degrees(gyaw):.1f}'],
                                        capture_output=True, text=True)
                     lines = [ln.strip() for ln in (r.stdout + r.stderr).splitlines() if 'fit' in ln or '✗' in ln]
                     self.state.fit_msg = (lines[-1] if lines else 'fit finished')[:120]

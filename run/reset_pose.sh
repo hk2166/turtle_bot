@@ -52,11 +52,14 @@ if (( ! EXACT )); then
       ok "best fit: x $FX  y $FY  $(python3 -c "import math; print(round(math.degrees($FYAW)))")°  ($pct% of the laser points on map walls)"
       X="$FX" Y="$FY" YAW="$FYAW"
     else
-      warn "no good fit nearby (best $pct% of points on walls): setting the pose as given."
-      warn "Is the robot really there? Try --wide, or give a closer X Y YAW_DEG."
+      # Never fall back to the guess itself: on asdf3 the default guess (0,0) is off the map, and
+      # setting it mid-trip on 2026-10-13 "teleported" the robot there - every goal then failed.
+      err "no good fit near x $X, y $Y (best $pct% of points on walls): pose left unchanged."
+      err "Is the robot really there? Try --wide, give a closer X Y YAW_DEG, or set it on the dashboard."
+      exit 1
     fi
   else
-    warn "fitting failed: setting the pose as given"
+    err "fitting failed: pose left unchanged"; exit 1
   fi
 fi
 python3 tools/pose_tool.py set "$X" "$Y" "$YAW"

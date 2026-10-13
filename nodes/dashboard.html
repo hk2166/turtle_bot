@@ -121,8 +121,8 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    <button onclick="setHome()" title="save the robot's current spot as home for this map">⌂ SET HOME</button>
    <button id="setpose" onclick="armPoseBtn()" title="then press at the robot's spot and DRAG toward where it faces">✛ SET POSE</button>
    <button onclick="fit('here')" title="re-fit the scan around where the robot believes it is">⟳ REFRESH POSE</button>
-   <button onclick="fit('start')" title="robot is near the mapping start">⌖ RESET POSE</button>
-   <button onclick="fit('wide')" title="robot could be anywhere within a few metres of the start">⌖ FIT WIDE</button>
+   <button onclick="fit('start')" title="re-fit within 1 m of where the robot thinks it is (else its last saved spot, else HOME); never guesses">⌖ RESET POSE</button>
+   <button onclick="fit('wide')" title="search 2.5 m around where the robot thinks it is (else its last saved spot, else HOME)">⌖ FIT WIDE</button>
    <button id="fenceb" onclick="fenceBtn()" title="trace the office boundary: click corner points, then SAVE">⛨ FENCE</button>
    <button id="fencesave" onclick="fenceSave()" style="display:none">✔ SAVE FENCE</button>
    <button id="fencecancel" onclick="fenceCancel()" style="display:none">✕</button>
