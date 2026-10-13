@@ -1,0 +1,10 @@
+Map asdf3  (246×351 cells at 0.05 m = 12.3 × 17.6 m)
+  mapped extent      11.1 × 16.2 m
+  free floor         106.9 m²
+  occupied cells     3449
+  specks removed     70  (≤ 3 cells, not near unknown)
+  movables removed   37  (free-standing, ≤ 30 cells and 0.5 m: chairs, bins)
+  holes filled       372  (≤ 25 cells, enclosed)
+  (run with --deep to also strip unreachable glass-bleed spray)
+  NOTE: statistics only. The original grading metric has not been recovered.
+  Check by eye: walls single and straight, glass room reads as a wall, loop closed with no doubling.

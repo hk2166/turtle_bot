@@ -1,0 +1,62 @@
+# named places for maps/asdf3, pinned on the dashboard (admin); the call page lists them
+places:
+- id: hemant-s-desk
+  name: Hemant's Desk
+  x: 15.433
+  y: -1.153
+  yaw: null
+- id: devanshu-s-desk
+  name: Devanshu's Desk
+  x: 10.483
+  y: -1.503
+  yaw: null
+- id: nikhil-s-desk
+  name: Nikhil's Desk
+  x: 10.383
+  y: -3.753
+  yaw: null
+- id: devesh-s-desk
+  name: Devesh's Desk
+  x: 11.633
+  y: -7.853
+  yaw: null
+- id: tanish-s-desk
+  name: Tanish's Desk
+  x: 11.683
+  y: -6.653
+  yaw: null
+- id: babneek-s-desk
+  name: Babneek's Desk
+  x: 10.033
+  y: -1.503
+  yaw: null
+- id: ashmeet-s-desk
+  name: Ashmeet's Desk
+  x: 8.583
+  y: -1.653
+  yaw: null
+- id: piyush-s-desk
+  name: Piyush's Desk
+  x: 10.033
+  y: -2.503
+  yaw: null
+- id: mudit-s-desk
+  name: Mudit's Desk
+  x: 7.483
+  y: -7.803
+  yaw: null
+- id: rahul-sir-office
+  name: Rahul Sir Office
+  x: 9.783
+  y: 0.547
+  yaw: null
+- id: saksham-s-office
+  name: Saksham's Office
+  x: 15.129
+  y: -2.657
+  yaw: null
+- id: meeting-room
+  name: Meeting Room
+  x: 15.131
+  y: -7.029
+  yaw: null
