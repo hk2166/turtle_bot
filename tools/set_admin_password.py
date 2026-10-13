@@ -26,4 +26,4 @@ with os.fdopen(fd, 'w') as f:
     f.write('# dashboard admin password (salted PBKDF2-SHA256) - tools/set_admin_password.py\n')
     yaml.safe_dump(hash_password(p1), f)
 os.replace(ADMIN_FILE + '.tmp', ADMIN_FILE)
-print(f'saved to {ADMIN_FILE}. Log in at http://resp-desktop.local:8088/login')
+print(f'saved to {ADMIN_FILE}. Log in: http://resp-desktop.local:8088 → ⚙ ADMIN (bottom right)')

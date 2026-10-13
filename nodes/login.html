@@ -23,10 +23,10 @@ a{color:var(--dim)}
  <input id="pw" type="password" autocomplete="current-password" autofocus>
  <button type="submit">LOG IN</button>
  <div id="msg"></div>
- <p style="margin-top:14px;font-size:12px"><a href="/call">Just want to call the robot? →</a></p>
+ <p style="margin-top:14px;font-size:12px"><a href="/">← Back to calling the robot</a></p>
 </form>
 <script>
 async function go(e){e.preventDefault();const m=document.getElementById('msg');m.textContent='checking…';
  try{const r=await (await fetch('/api/login',{method:'POST',body:JSON.stringify({password:document.getElementById('pw').value})})).json();
-  if(r.ok)location.href='/';else m.textContent=r.msg}catch(_){m.textContent='robot not reachable'}}
+  if(r.ok)location.href='/admin';else m.textContent=r.msg}catch(_){m.textContent='robot not reachable'}}
 </script></body></html>

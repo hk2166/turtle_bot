@@ -23,6 +23,12 @@ button.bad{border-color:var(--bad);color:var(--bad);text-align:center}
 .warn{color:var(--warn)}.badc{color:var(--bad)}
 ol{padding-left:22px}li{margin:3px 0}
 #err{color:var(--bad);min-height:1.4em;margin-top:8px;font-size:13px}
+/* admin entry: small, out of the way, bottom-right corner */
+#adminbtn{position:fixed;right:12px;bottom:12px;width:auto;margin:0;padding:7px 12px;font-size:12px;
+  letter-spacing:2px;border-color:var(--line);color:var(--dim);background:var(--panel);text-align:center;
+  text-decoration:none;border:1px solid var(--line);border-radius:6px}
+#adminbtn:hover{border-color:var(--fg);color:var(--fg)}
+body{padding-bottom:64px}
 </style></head><body>
 <h1>▚ CALL THE CAMPUS BOT</h1>
 
@@ -50,7 +56,7 @@ ol{padding-left:22px}li{margin:3px 0}
  <ol id="queue"></ol>
  <div class="dim" id="qempty">nobody waiting</div>
 </div>
-<p class="dim" style="text-align:center;margin-top:6px"><a href="/login" style="color:var(--dim)">admin</a></p>
+<a id="adminbtn" href="/login" title="robot admin (password)">⚙ ADMIN</a>
 
 <script>
 // one device id per browser (one open request per device) + the name, both remembered

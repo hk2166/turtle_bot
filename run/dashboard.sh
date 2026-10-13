@@ -12,7 +12,8 @@ case "${1:-on}" in
     start_bg dashboard python3 "$PROJECT_DIR/nodes/dashboard.py"
     sleep 3
     if is_running dashboard; then
-      ok "dashboard: http://$(hostname).local:8088  (http://$(hostname -I | awk '{print $1}'):8088)"
+      ok "call page: http://$(hostname).local:8088  (http://$(hostname -I | awk '{print $1}'):8088)"
+      info "admin: ⚙ ADMIN (bottom right) or http://$(hostname).local:8088/admin"
       info "if it doesn't load from the Mac: sudo ufw allow 8088/tcp"
     else err "didn't start: see $LOG_DIR/dashboard.log"; tail -5 "$LOG_DIR/dashboard.log" >&2; exit 1; fi ;;
   off) stop_bg dashboard; ok "dashboard off" ;;

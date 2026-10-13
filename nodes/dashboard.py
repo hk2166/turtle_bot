@@ -491,7 +491,8 @@ PAGE = open(os.path.join(PROJECT, 'nodes', 'dashboard.html'), 'rb').read()
 CALL_PAGE = open(os.path.join(PROJECT, 'nodes', 'call.html'), 'rb').read()
 LOGIN_PAGE = open(os.path.join(PROJECT, 'nodes', 'login.html'), 'rb').read()
 # Open to anyone on the WiFi: the call page and what it needs. Everything else is admin-only.
-PUBLIC_GET = ('/call', '/login', '/api/places', '/api/queue')
+# '/' is the call page for everyone; mission control lives at /admin (login: ⚙ ADMIN, bottom right)
+PUBLIC_GET = ('/', '/call', '/login', '/api/places', '/api/queue')
 PUBLIC_POST = ('/api/login', '/api/request', '/api/request/cancel', '/api/request/done')
 # admin actions that take the robot away from the queue (it pauses, a trip in progress goes back in front)
 TAKES_CONTROL = {'/api/goal': 'map goal', '/api/stop': 'STOP', '/api/drive': 'manual drive',
@@ -534,11 +535,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         route = self.path.split('?')[0]
-        if route == '/call':
+        if route in ('/', '/index.html', '/call'):
             self.send(200, 'text/html; charset=utf-8', CALL_PAGE)
             return
         if route == '/login':
-            self.send(200, 'text/html; charset=utf-8', LOGIN_PAGE)
+            if self.auth.valid(self.token()):          # already logged in: straight to mission control
+                self.send(302, 'text/plain', b'admin', (('Location', '/admin'),))
+            else:
+                self.send(200, 'text/html; charset=utf-8', LOGIN_PAGE)
             return
         if route == '/api/places':
             self.json({'map': AREA, 'places': [{'id': p['id'], 'name': p['name']} for p in fleet.load_places(AREA)]})
@@ -548,12 +552,12 @@ class Handler(BaseHTTPRequestHandler):
             self.json(self.queue.public_view(dev))
             return
         if not self.is_admin():
-            if route in ('/', '/index.html'):
+            if route == '/admin':
                 self.send(302, 'text/plain', b'login', (('Location', '/login'),))
             else:
                 self.send(401, 'text/plain', b'admin login required')
             return
-        if self.path in ('/', '/index.html'):
+        if route == '/admin':
             self.send(200, 'text/html; charset=utf-8', PAGE)
         elif self.path.startswith('/map.png'):
             if pid_alive('slam') and self.ros.grid is not None:

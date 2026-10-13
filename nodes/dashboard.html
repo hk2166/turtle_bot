@@ -462,7 +462,7 @@ let lastQ='',lastP='';
 function renderQueue(s){
  const q=s.queue||{jobs:[]},open=q.jobs.filter(j=>['waiting','driving','arrived'].includes(j.status));
  document.getElementById('qbadge').textContent=open.length?`(${open.length})`:'';
- document.getElementById('calllink').textContent=location.host+'/call';
+ document.getElementById('calllink').textContent=location.host;
  document.getElementById('qstate').textContent=q.paused?'⏸ PAUSED'+(q.msg?' — '+q.msg:''):'▶ RUNNING · robot '+q.robot;
  document.getElementById('qstate').className=q.paused?'bad':'ok';
  document.getElementById('qpause').textContent=q.paused?'▶ RESUME QUEUE':'⏸ PAUSE QUEUE';
