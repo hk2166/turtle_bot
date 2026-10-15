@@ -62,6 +62,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
   padding:3px 6px;border-radius:4px}
 #setpose.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
 #fenceb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
+#erasefb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #pinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
 #unpinb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #movepinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
@@ -126,6 +127,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    <button id="fenceb" onclick="fenceBtn()" title="trace the office boundary: click corner points, then SAVE">⛨ FENCE</button>
    <button id="fencesave" onclick="fenceSave()" style="display:none">✔ SAVE FENCE</button>
    <button id="fencecancel" onclick="fenceCancel()" style="display:none">✕</button>
+   <button id="erasefb" onclick="eraseBtn()" title="then drag over fence lines to rub out just those bits (e.g. open a doorway)">⌫ ERASE FENCE</button>
    <button onclick="fenceClear()" title="delete ALL fence lines of this map (re-draw from scratch)">⌫ CLEAR FENCE</button>
    <button id="pinb" onclick="pinBtn()" title="click the map where a named place should be (desk, pantry...)">📍 PIN PLACE</button>
    <button onclick="pinHere()" title="name the spot where the robot stands now (most precise: drive it there first)">📍 PIN ROBOT SPOT</button>
@@ -260,6 +262,34 @@ const img=new Image(); img.id='mapimg'; img.src='/map.png';
 img.onload=()=>{cv.width=img.width;cv.height=img.height;fitCanvas();draw()};
 let M=null,S={},poseDrag=null,feedOn=true,armPose=false,fenceMode=false,fencePts=[],pinMode=false;
 let unpinMode=false,movePinMode=false,pinDrag=null;
+// fence eraser: a 0.3 m circle; dragging it cuts away the parts of fence lines under it
+const ERASE_R=0.3;let eraseMode=false,eraseLines=null,eraseLast=null,eraseCur=null;
+function eraseBtn(){if(!eraseMode&&fenceMode)fenceCancel();
+ eraseMode=!eraseMode;eraseLines=null;eraseCur=null;
+ document.getElementById('erasefb').classList.toggle('armed',eraseMode);
+ if(eraseMode)log((S.fence||[]).length?'ERASE FENCE: drag over the fence lines to rub them out (press ⌫ ERASE FENCE again to stop)':'ERASE FENCE: this map has no fence');
+ draw()}
+function eraseSeg(sg,cx0,cy0){   // what's left of segment sg outside the circle: 0, 1 or 2 pieces
+ const dx=sg[2]-sg[0],dy=sg[3]-sg[1],fx=sg[0]-cx0,fy=sg[1]-cy0;
+ const a=dx*dx+dy*dy,b=2*(fx*dx+fy*dy),c=fx*fx+fy*fy-ERASE_R*ERASE_R,disc=b*b-4*a*c;
+ if(a<1e-9)return c<0?[]:[sg];
+ if(disc<=0)return[sg];
+ const t1=(-b-Math.sqrt(disc))/(2*a),t2=(-b+Math.sqrt(disc))/(2*a);
+ if(t2<=0||t1>=1)return[sg];
+ const L=Math.sqrt(a),out=[],at=t=>[sg[0]+t*dx,sg[1]+t*dy];
+ if(t1>0&&t1*L>0.01)out.push([sg[0],sg[1],...at(t1)]);
+ if(t2<1&&(1-t2)*L>0.01)out.push([...at(t2),sg[2],sg[3]]);
+ return out}
+function eraseTo(p){   // sweep from the last point so a fast drag can't skip over a line
+ const q=eraseLast||p,n=Math.max(1,Math.ceil(Math.hypot(p[0]-q[0],p[1]-q[1])/(ERASE_R/2)));
+ for(let i=1;i<=n;i++){const x=q[0]+(p[0]-q[0])*i/n,y=q[1]+(p[1]-q[1])*i/n;
+  eraseLines=eraseLines.flatMap(sg=>eraseSeg(sg,x,y))}
+ eraseLast=p}
+async function eraseCommit(){const before=(S.fence||[]).length,lines=eraseLines;eraseLast=null;
+ if(JSON.stringify(lines)==JSON.stringify(S.fence||[])){eraseLines=null;draw();return}
+ await post('/api/fence',{lines});S.fence=lines;eraseLines=null;
+ log(`fence erased: ${before} → ${lines.length} segment(s)`);
+ document.getElementById('mapimg').src='/map.png?'+Date.now()}
 function disarmPins(except){
  if(except!='pin'){pinMode=false;document.getElementById('pinb').classList.remove('armed')}
  if(except!='unpin'){unpinMode=false;document.getElementById('unpinb').classList.remove('armed')}
@@ -291,6 +321,7 @@ async function pinAt(x,y){pinMode=false;document.getElementById('pinb').classLis
 async function pinHere(){const name=prompt('Name for the spot where the robot stands now:');if(!name)return;
  const r=await(await post('/api/places/add',{name,here:true})).json();log(r.msg)}
 function fenceBtn(){fenceMode=!fenceMode;fencePts=[];
+ if(fenceMode&&eraseMode)eraseBtn();
  document.getElementById('fenceb').classList.toggle('armed',fenceMode);
  document.getElementById('fencesave').style.display=fenceMode?'':'none';
  document.getElementById('fencecancel').style.display=fenceMode?'':'none';
@@ -333,12 +364,16 @@ cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);
   const p=nearestPin(wx,wy);
   if(p){pinDrag={p,x:p.x,y:p.y};draw();return}
   log('MOVE PIN: press closer to a pin');return}   // a missed grab must never become a map goal
+ if(eraseMode&&M&&e.isPrimary){const r=cv.getBoundingClientRect();const w=p2w(e.clientX-r.left,e.clientY-r.top);
+  eraseLines=(S.fence||[]).map(sg=>sg.slice());eraseLast=null;eraseCur=w;eraseTo(w);draw();return}
  if((armPose||e.shiftKey)&&!fenceMode&&M){const r=cv.getBoundingClientRect();
   const w=p2w(e.clientX-r.left,e.clientY-r.top);poseDrag={a:w,b:w};draw();return}
  ptrs.set(e.pointerId,[e.clientX,e.clientY]);moved=0;
  if(ptrs.size==1)panStart={x:e.clientX,y:e.clientY,tx:Z.tx,ty:Z.ty};
  if(ptrs.size==2){const a=[...ptrs.values()];pinch0={d:Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]),s:Z.s}}});
 cv.addEventListener('pointermove',e=>{
+ if(eraseMode&&M){const r=cv.getBoundingClientRect();eraseCur=p2w(e.clientX-r.left,e.clientY-r.top);
+  if(eraseLines)eraseTo(eraseCur);draw();return}
  if(pinDrag){const r=cv.getBoundingClientRect();[pinDrag.x,pinDrag.y]=p2w(e.clientX-r.left,e.clientY-r.top);draw();return}
  if(poseDrag){const r=cv.getBoundingClientRect();
   poseDrag.b=p2w(e.clientX-r.left,e.clientY-r.top);draw();return}
@@ -351,6 +386,7 @@ cv.addEventListener('pointermove',e=>{
   if(moved>6){const r=cv.getBoundingClientRect();
    Z.tx=panStart.tx+dx*cv.width/r.width;Z.ty=panStart.ty+dy*cv.height/r.height;clampZ();draw()}}});
 cv.addEventListener('pointerup',async e=>{
+ if(eraseLines){eraseCommit();return}
  if(pinDrag){dropPin();return}
  if(poseDrag){const d=poseDrag;poseDrag=null;armPose=false;
   document.getElementById('setpose').classList.remove('armed');
@@ -362,7 +398,9 @@ cv.addEventListener('pointerup',async e=>{
  const wasTap=moved<=6&&ptrs.size==1;
  ptrs.delete(e.pointerId);if(ptrs.size<2)pinch0=null;if(ptrs.size==0)panStart=null;
  if(wasTap)handleTap(e)});
-cv.addEventListener('pointercancel',e=>{ptrs.delete(e.pointerId);pinch0=null;panStart=null;if(pinDrag){pinDrag=null;draw()}});
+cv.addEventListener('pointercancel',e=>{ptrs.delete(e.pointerId);pinch0=null;panStart=null;if(pinDrag){pinDrag=null;draw()}
+ if(eraseLines){eraseLines=null;eraseLast=null;draw()}});
+cv.addEventListener('pointerleave',()=>{if(eraseCur&&!eraseLines){eraseCur=null;draw()}});
 // Pins: small numbered dots (numbers = the list on QUEUE & PLACES). Short names appear only when
 // zoomed in and only where they don't overlap another label; hover/tap a dot for its full name.
 let hoverPin=null;
@@ -431,9 +469,13 @@ function draw(){
   cx.beginPath();cx.moveTo(c2,d2);cx.lineTo(c2-10*L*Math.cos(an-0.5),d2-10*L*Math.sin(an-0.5));
   cx.moveTo(c2,d2);cx.lineTo(c2-10*L*Math.cos(an+0.5),d2-10*L*Math.sin(an+0.5));cx.stroke();
   cx.strokeRect(a-4*L,b-4*L,8*L,8*L)}
- if(S.fence&&S.fence.length){cx.strokeStyle='#ff5566';cx.lineWidth=2*L;
-  S.fence.forEach(sg=>{const[a,b]=w2p(sg[0],sg[1]),[c,d]=w2p(sg[2],sg[3]);
+ const fl=eraseLines||S.fence;
+ if(fl&&fl.length){cx.strokeStyle='#ff5566';cx.lineWidth=2*L;
+  fl.forEach(sg=>{const[a,b]=w2p(sg[0],sg[1]),[c,d]=w2p(sg[2],sg[3]);
    cx.beginPath();cx.moveTo(a,b);cx.lineTo(c,d);cx.stroke()})}
+ if(eraseMode&&eraseCur){const[a,b]=w2p(eraseCur[0],eraseCur[1]);
+  cx.strokeStyle='#ffffff';cx.setLineDash([3*L,3*L]);cx.lineWidth=1.5*L;cx.beginPath();
+  cx.arc(a,b,ERASE_R*Math.hypot(M.A[0][0],M.A[1][0]),0,2*Math.PI);cx.stroke();cx.setLineDash([])}
  drawPlaces(L);
  if(fencePts.length){cx.strokeStyle='#ff5566';cx.setLineDash([4*L,3*L]);cx.lineWidth=2*L;cx.beginPath();
   fencePts.forEach((p,i)=>{const[a,b]=w2p(p[0],p[1]);i?cx.lineTo(a,b):cx.moveTo(a,b);});cx.stroke();

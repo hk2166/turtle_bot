@@ -831,6 +831,8 @@ class Handler(BaseHTTPRequestHandler):
             pts = body.get('points') or []
             if body.get('clear'):
                 lines = []
+            elif 'lines' in body:   # the eraser sends the whole edited set back
+                lines = [[float(v) for v in seg] for seg in body['lines'] if len(seg) == 4]
             else:
                 for a, b in zip(pts, pts[1:]):
                     lines.append([a[0], a[1], b[0], b[1]])
