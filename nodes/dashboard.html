@@ -17,6 +17,18 @@ h1 .blink{animation:bl 1.2s steps(2) infinite}@keyframes bl{to{opacity:0}}
 #bar{flex:none;display:flex;flex-wrap:wrap;gap:4px 18px;padding:6px 10px;background:var(--panel);
   border:1px solid var(--line);border-radius:6px}
 #bar b{color:var(--dim);font-weight:400;margin-right:5px}
+#ready{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:5px 10px;margin-top:6px;
+  background:var(--panel);border:1px solid var(--line);border-radius:6px}
+#rdverdict{font-weight:bold;padding:2px 9px;border-radius:4px;letter-spacing:1px;font-size:12px}
+#rdverdict.ok{background:#0c2a12;color:#8cff9e;border:1px solid var(--fg)}
+#rdverdict.warn{background:#2a220c;color:#ffd27a;border:1px solid var(--warn)}
+#rdverdict.bad{background:#2a0c0c;color:#ff8c8c;border:1px solid var(--bad)}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;font-size:11px;
+  border:1px solid var(--line);background:#0f1d0f;cursor:default}
+.chip .dot{width:8px;height:8px;border-radius:50%;flex:none}
+.chip.ok .dot{background:#49f07a}.chip.warn .dot{background:#ffcf5a}.chip.bad .dot{background:#ff5566}
+.chip.warn{border-color:var(--warn)}.chip.bad{border-color:var(--bad)}
+.chip small{color:var(--dim)}
 .grid{flex:1;min-height:0;display:grid;grid-template-columns:1.5fr 1fr;gap:10px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;
   box-shadow:0 0 18px #02140288 inset;display:flex;flex-direction:column;min-height:0}
@@ -111,6 +123,9 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
  <span><b>PWR</b><span id="power">…</span></span>
  <span><b>WIFI</b><span id="wifi">…</span></span>
  <span><b>TEMP</b><span id="temp">…</span></span>
+</div>
+<div id="ready" title="pre-flight: everything the robot needs to run a delivery. Hover a chip for detail.">
+ <b id="rdverdict" class="warn">PRE-FLIGHT</b><span id="rdchips"></span>
 </div>
 <div class="grid" id="view-mission">
  <div class="panel">
@@ -555,10 +570,48 @@ async function createMap(){const n=prompt('Name for the NEW map (letters, digits
  if(!n)return; await post('/api/map_start',{name:n});log('creating map '+n)}
 async function saveMap(){await post('/api/map_save',{});log('saving map')}
 async function discardMap(){if(confirm('Discard this mapping run?')){await post('/api/map_discard',{});log('mapping discarded')}}
+function rdchip(cls,label,val,hint){
+ return `<span class="chip ${cls}" title="${(hint||'').replace(/"/g,'&quot;')}"><span class="dot"></span>${label}`+
+        (val?' <small>'+val+'</small>':'')+'</span>'}
+function renderReady(s){
+ const C=[];let worst='ok';
+ const add=(cls,label,val,hint)=>{C.push(rdchip(cls,label,val,hint));
+  if(cls=='bad')worst='bad';else if(cls=='warn'&&worst!='bad')worst='warn'};
+ const pk=s.power_ok;
+ add(pk===0?'ok':pk===1?'bad':'warn','5V',pk===0?'ok':pk===1?'LOW':'?',s.power||'power unreadable');
+ if(s.mode=='MAPPING')add('warn','Nav','mapping','mapping in progress — not navigating');
+ else if(s.nav_up&&s.mode=='NAV')add('ok','Nav','up',s.nav);
+ else add('bad','Nav','down',s.nav||'navigation not running — pick a map and NAVIGATE');
+ add(s.pose?'ok':'bad','Pose',s.pose?'set':'lost',
+     s.pose?'robot is localized':'robot does not know where it is — SET POSE / RESET POSE');
+ add(s.cam_ok?'ok':'bad','Cam',s.cam_ok?'live':'off',
+     s.cam_ok?'camera streaming':'no camera frames in the last 3 s');
+ if(!s.current)add('bad','Map','none','no map loaded');
+ else if(!s.home)add('warn','Map',s.current,'map loaded but no HOME set (⌂ SET HOME)');
+ else add('ok','Map',s.current,'map and home set');
+ const np=(s.places||[]).length;
+ add(np?'ok':'bad','Pins',np?''+np:'none',
+     np?np+' place(s) to deliver to':'no places pinned — nobody can call the robot anywhere');
+ const q=s.queue||{jobs:[]},open=(q.jobs||[]).filter(j=>['waiting','driving','arrived'].includes(j.status)).length;
+ if(q.paused)add('warn','Queue','paused','queue is paused — requests will not dispatch');
+ else if(open)add('warn','Queue',open+' open',open+' request(s) in the queue');
+ else add('ok','Queue','idle','no pending requests');
+ const wm=(s.wifi||'').match(/-?\d+/);
+ if(!wm)add('warn','WiFi','?',s.wifi||'signal unknown');
+ else{const d=+wm[0];add(d>=-67?'ok':d>=-75?'warn':'bad','WiFi',d+' dBm',
+      d>=-67?'strong':d>=-75?'usable':'weak — the call page may be slow to reach')}
+ const tm=(s.temp||'').match(/[\d.]+/);
+ if(tm){const c=+tm[0];add(c<70?'ok':c<80?'warn':'bad','Temp',Math.round(c)+'°',
+      c<70?'cool':c<80?'warm':'hot — the Pi will throttle')}
+ const vb=document.getElementById('rdverdict');
+ vb.className=worst;
+ vb.textContent=worst=='ok'?'✓ READY':worst=='warn'?'● CHECK':'✕ NOT READY';
+ document.getElementById('rdchips').innerHTML=C.join('');
+}
 let lastJob='',mapMode=false;
 setInterval(async()=>{try{
  const rs=await fetch('/api/state');if(rs.status==401){location.href='/login';return}
- const s=await rs.json();S=s;M=s.map;renderQueue(s);
+ const s=await rs.json();S=s;M=s.map;renderQueue(s);renderReady(s);
  const el=(i,v)=>document.getElementById(i).textContent=v;
  el('nav',s.nav);el('power',s.power);el('wifi',s.wifi);el('temp',s.temp);
  el('pose',s.pose?`${s.pose[0].toFixed(2)}, ${s.pose[1].toFixed(2)} @ ${(s.pose[2]*57.3).toFixed(0)}°`:'unknown');

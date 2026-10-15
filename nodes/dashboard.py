@@ -238,8 +238,10 @@ class State:
                 p = subprocess.run(['bash', os.path.join(PROJECT, 'run', 'power_check.sh'), '--brief'],
                                    capture_output=True, text=True, timeout=5)
                 out['power'] = p.stdout.strip()[:60] or 'n/a'
+                out['power_ok'] = p.returncode     # 0 clean, 1 low, 2 unreadable (pre-flight uses this)
             except Exception:
                 out['power'] = 'n/a'
+                out['power_ok'] = 2
             try:
                 w = subprocess.run(['iw', 'dev', 'wlan0', 'link'], capture_output=True, text=True, timeout=3).stdout
                 out['wifi'] = next((ln.split()[1] + ' dBm' for ln in w.splitlines() if 'signal' in ln), 'n/a')
@@ -597,7 +599,8 @@ class Handler(BaseHTTPRequestHandler):
                  'home': list(get_home(AREA)[:3]) if os.path.exists(os.path.join(PROJECT, 'maps', f'{AREA}_clean.yaml')) else None,
                  'map': {'A': A[:2].tolist(), 'Ainv': Ainv[:2].tolist(),
                          'h': shape[0], 'w': shape[1]},
-                 'places': fleet.load_places(AREA), 'queue': self.queue.admin_view(), **s}
+                 'places': fleet.load_places(AREA), 'queue': self.queue.admin_view(),
+                 'cam_ok': self.ros.cam_jpg is not None and time.time() - self.ros.cam_t < 3.0, **s}
             self.send(200, 'application/json', json.dumps(d).encode())
         elif self.path.startswith('/api/logs'):
             name = (self.path.split('f=')[1].split('&')[0] if 'f=' in self.path else 'nav')
