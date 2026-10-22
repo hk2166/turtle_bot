@@ -148,6 +148,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    <button onclick="pinHere()" title="name the spot where the robot stands now (most precise: drive it there first)">📍 PIN ROBOT SPOT</button>
    <button id="movepinb" onclick="movePinBtn()" title="then press on a pin and drag it to the right spot">✥ MOVE PIN</button>
    <button id="unpinb" onclick="unpinBtn()" title="then tap a pin on the map to delete it">✕ REMOVE PIN</button>
+   <button onclick="whosThere()" title="face-identify who is at the robot now (use when loading a parcel). Logs only — never blocks a delivery.">👤 WHO'S THERE</button>
    <small id="fit"></small>
   </div>
  </div>
@@ -511,6 +512,9 @@ async function handleTap(e){
 document.getElementById('stop').onclick=async()=>{await post('/api/stop',{});log('STOP sent')};
 async function fit(mode){await post('/api/fit',{mode});log('pose fit started ('+mode+')')}
 async function goHome(){await post('/api/home',{});log('going home')}
+async function whosThere(){log('face: identifying…');
+ try{const r=await(await post('/api/face/identify',{})).json();log(r.msg||'face: no result')}
+ catch(e){log('face: request failed')}}
 async function setHome(){if(confirm('Save the robot\'s current spot as HOME for this map?')){await post('/api/home_set',{});log('home set')}}
 async function post(u,b){return fetch(u,{method:'POST',body:JSON.stringify(b)})}
 async function logout(){await post('/api/logout',{});location.href='/login'}
@@ -586,6 +590,10 @@ function renderReady(s){
      s.pose?'robot is localized':'robot does not know where it is — SET POSE / RESET POSE');
  add(s.cam_ok?'ok':'bad','Cam',s.cam_ok?'live':'off',
      s.cam_ok?'camera streaming':'no camera frames in the last 3 s');
+ const f=s.face||{};
+ if(f.ok&&f.available)add('ok','Face',(f.enrolled||0)+' enrolled','face service up, 2nd camera ready');
+ else if(f.ok)add('warn','Face','no cam','face service up but no /dev/face_cam (deliveries still work)');
+ else add('warn','Face','off','face recognition off (run/face.sh on) — optional, deliveries still work');
  if(!s.current)add('bad','Map','none','no map loaded');
  else if(!s.home)add('warn','Map',s.current,'map loaded but no HOME set (⌂ SET HOME)');
  else add('ok','Map',s.current,'map and home set');

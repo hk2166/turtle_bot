@@ -37,6 +37,7 @@ from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener
 
 import fleet
+import face_client   # talks to the warm face service; returns ok:false (never raises) when it's off
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.expanduser('~/.campus_bot/logs')
@@ -265,6 +266,39 @@ def pid_alive(name):
         return True
     except (OSError, ValueError):
         return False
+
+
+_face = {'t': 0.0, 'health': {'ok': False}}
+
+
+def face_health():
+    """Cached face-service health (polled at most every 10 s): {ok, available, enrolled, ...}."""
+    now = time.time()
+    if now - _face['t'] > 10:
+        h = face_client.health()
+        _face['health'] = {'ok': bool(h.get('ok')),
+                           'available': bool(h.get('ok') and h.get('camera', {}).get('available')),
+                           'enrolled': h.get('enrolled', 0), 'model_loaded': bool(h.get('model_loaded'))}
+        _face['t'] = now
+    return _face['health']
+
+
+def face_identify(where='check', job=None):
+    """Who is at the crate, as a short label, or None to log nothing. Log-only, never raises, never
+    blocks a delivery. Skips silently unless the face service is up with a camera and someone enrolled."""
+    try:
+        if not face_health().get('available'):
+            return None
+        r = face_client.identify()
+        if not r.get('ok'):
+            return None
+        if r.get('identified'):
+            return f"{r['person_id']} ({r['score']})"
+        if r.get('reason') in ('unknown', 'ambiguous'):
+            return 'someone not recognised'
+        return None            # no_face / no_camera / nobody_enrolled: nothing worth logging
+    except Exception:
+        return None
 
 
 def list_maps():
@@ -600,7 +634,8 @@ class Handler(BaseHTTPRequestHandler):
                  'map': {'A': A[:2].tolist(), 'Ainv': Ainv[:2].tolist(),
                          'h': shape[0], 'w': shape[1]},
                  'places': fleet.load_places(AREA), 'queue': self.queue.admin_view(),
-                 'cam_ok': self.ros.cam_jpg is not None and time.time() - self.ros.cam_t < 3.0, **s}
+                 'cam_ok': self.ros.cam_jpg is not None and time.time() - self.ros.cam_t < 3.0,
+                 'face': face_health(), **s}
             self.send(200, 'application/json', json.dumps(d).encode())
         elif self.path.startswith('/api/logs'):
             name = (self.path.split('f=')[1].split('&')[0] if 'f=' in self.path else 'nav')
@@ -662,6 +697,19 @@ class Handler(BaseHTTPRequestHandler):
             self.queue.admin_took_control(TAKES_CONTROL[self.path])
         if self.path in ('/api/use_map', '/api/map_start'):
             self.queue.clear('map changed: open requests cancelled (places belong to the old map)', go_home=False)
+        if self.path == '/api/face/identify':
+            # on-demand "who's at the crate" — used when loading a parcel (pickup). Log only.
+            r = face_client.identify()
+            if r.get('ok') and r.get('identified'):
+                msg = f"face: {r['person_id']} ({r['score']})"
+            elif r.get('ok'):
+                msg = f"face: {r.get('reason', 'no match')}"
+            else:
+                msg = f"face: unavailable ({r.get('error', 'service off')})"
+            self.state.fit_msg = msg
+            print(time.strftime('%H:%M:%S'), msg, flush=True)
+            self.json({'ok': bool(r.get('ok')), 'msg': msg, 'result': r})
+            return
         if self.path == '/api/logout':
             self.auth.logout(self.token())
             self.json({'ok': True}, headers=(('Set-Cookie', 'cb_admin=; Path=/; Max-Age=0'),))
@@ -919,7 +967,8 @@ def main():
 
     Handler.queue = fleet.Queue(ros, nav, lambda: AREA, lambda: get_home(AREA),
                                 lambda: ros.pose() is not None and not pid_alive('slam'), qlog,
-                                snap_fn=lambda x, y: snap_reachable(ros, x, y) or snap_goal(x, y))
+                                snap_fn=lambda x, y: snap_reachable(ros, x, y) or snap_goal(x, y),
+                                face_fn=face_identify)
     if not fleet.Auth.configured():
         print('no admin password yet: python3 tools/set_admin_password.py (the call page works anyway)',
               flush=True)

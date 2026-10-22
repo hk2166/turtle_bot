@@ -204,10 +204,13 @@ class Navigator:
 
 
 class Queue:
-    def __init__(self, ros, nav, area_fn, home_fn, ready_fn, log_fn, snap_fn=None):
+    def __init__(self, ros, nav, area_fn, home_fn, ready_fn, log_fn, snap_fn=None, face_fn=None):
         self.ros, self.nav = ros, nav
         self.area_fn, self.home_fn, self.ready_fn, self.log = area_fn, home_fn, ready_fn, log_fn
         self.snap_fn = snap_fn        # (x, y) -> (x', y', moved) on currently reachable floor, or None
+        # face_fn(where, job) -> a short "who is at the crate" label or None. Log-only: it never gates a
+        # delivery, and runs in a background thread so a slow (or down) face service can't stall the queue.
+        self.face_fn = face_fn
         self.lock = threading.RLock()
         self.jobs, self.paused, self.msg, self.homing = [], False, '', False
         self.want_home = False         # a trip ended: drive home once the robot is free (not only within 5 s)
@@ -316,6 +319,27 @@ class Queue:
             self.log(f'queue: {name} called the robot to {place["name"]}')
             return job, 'ok'
 
+    def _face_async(self, where, job):
+        """Identify who is at the crate (where='pickup' as it leaves, 'handover' on arrival) and log it.
+        Background + best-effort: no camera / no face service / nobody recognised just logs nothing."""
+        if not self.face_fn:
+            return
+
+        def run():
+            try:
+                who = self.face_fn(where, job)
+            except Exception as e:
+                self.log(f'face identify error: {e}')
+                return
+            if not who:
+                return
+            with self.lock:
+                job['loaded_by' if where == 'pickup' else 'handed_to'] = who
+                self._save()
+            verb = 'loaded by' if where == 'pickup' else 'handed to'
+            self.log(f'face: {verb} {who} at {job["place_name"]}')
+        threading.Thread(target=run, daemon=True).start()
+
     def _finish(self, job, status, note=''):
         job['status'], job['note'], job['finished'] = status, note, time.time()
         self.want_home = True
@@ -398,6 +422,7 @@ class Queue:
                     active['status'], active['arrived'] = 'arrived', time.time()
                     self.log(f'queue: arrived at {active["place_name"]} for {active["name"]}')
                     self._save()
+                    self._face_async('handover', active)   # who actually took the parcel (log only)
                 elif r in ('aborted', 'rejected'):
                     active['tries'] = active.get('tries', 0) + 1
                     if active['tries'] < TRIP_TRIES:
@@ -457,3 +482,5 @@ class Queue:
             retry = f' (try {nxt["tries"] + 1}/{TRIP_TRIES})' if nxt.get('tries') else ''
             self.log(f'queue: driving to {nxt["place_name"]} for {nxt["name"]}{retry}')
             self._save()
+            if not nxt.get('tries'):                       # first attempt: whoever loaded it, as it leaves
+                self._face_async('pickup', nxt)
