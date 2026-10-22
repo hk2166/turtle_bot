@@ -47,6 +47,37 @@ python face/verify.py hemant --images a.jpg b.jpg    # from files
 Exit code 0 = accept, 1 = reject, 2 = error. Stops at the first frame ≥ threshold; the 2 s budget is checked
 between frames. **0.42 is a placeholder** until calibration has impostor data.
 
+## Live service — identify + verify during delivery (added 2026-10-22)
+
+`verify.py`/`identify.py` load the model every run (seconds), which blows the 2 s handover budget. For
+the robot, run the **warm service** instead: it loads buffalo_s once, owns the **second** camera, and
+answers over localhost HTTP. The delivery flow calls it through `nodes/face_client.py` (pure stdlib,
+degrades to OTP/manual if the service or camera is down).
+
+```
+run/face.sh on                       # starts face/face_service.py in the face venv → 127.0.0.1:8070
+curl -s localhost:8070/health        # model_loaded, camera.available, enrolled count
+curl -s localhost:8070/people        # enrolled ids
+python3 nodes/face_client.py identify # 1:N: who is at the camera?   (from the ROS/dashboard python)
+python3 nodes/face_client.py verify hemant   # 1:1: is it hemant?
+```
+
+Endpoints: `GET /health`, `GET /people`, `POST /verify {person_id}` (1:1 — the handover check),
+`POST /identify {}` (1:N — who loaded / stronger handover). Both also take `n`, `threshold`,
+`det_size` (identify: `margin`, `top`), and `{"images":[...]}` to run against files for testing.
+
+- **`identify.py`** is the 1:N counterpart to `verify.py`: best-of-N, same 2 s budget, but a match must
+  also beat the runner-up by `MARGIN` (0.04) so two look-alikes never silently swap.
+- **Second camera:** `setup/10_face_cam.sh` (run once, with sudo, after plugging the HIKVISION in) pins
+  it to `/dev/face_cam` so it never grabs the Brio's `/dev/video0`. `nodes/camera_node.py` keeps the
+  Brio for AprilTags + preview; the face service uses only `/dev/face_cam`. No device contention.
+- **det_size:** 640 is accurate for a normally-framed face (~0.5–1 m from the 1080p cam) but misses a
+  face that fills a tiny crop; 320 is faster and catches small crops. Default 640 (`FACE_DET_SIZE`).
+
+Proven end-to-end in a throwaway store (enroll → identify → verify: right person 1.00, strangers ~0.10).
+**Not yet run on the robot with the real second camera** (mount being printed, 2026-10-22). The
+threshold is still the 0.42 placeholder until `calibrate.py` has impostor data.
+
 ## Calibrate (what's still open, see RECOVERY.md)
 ```bash
 python face/calibrate.py collect --person hemant --label genuine  --session mast --frames 40
