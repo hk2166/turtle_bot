@@ -530,7 +530,8 @@ LOGIN_PAGE = open(os.path.join(PROJECT, 'nodes', 'login.html'), 'rb').read()
 # Open to anyone on the WiFi: the call page and what it needs. Everything else is admin-only.
 # '/' is the call page for everyone; mission control lives at /admin (login: ⚙ ADMIN, bottom right)
 # The camera preview is view-only and public too: the call page shows what the robot sees.
-PUBLIC_GET = ('/', '/call', '/login', '/api/places', '/api/queue', '/frame.jpg')
+PUBLIC_GET = ('/', '/call', '/login', '/api/places', '/api/queue', '/frame.jpg', '/enroll', '/face')
+ENROLL_PORT = int(os.environ.get('ENROLL_PORT', '8443'))    # face/face_service.py's HTTPS enrolment page
 PUBLIC_POST = ('/api/login', '/api/request', '/api/request/cancel', '/api/request/done')
 # admin actions that take the robot away from the queue (it pauses, a trip in progress goes back in front)
 TAKES_CONTROL = {'/api/goal': 'map goal', '/api/stop': 'STOP', '/api/drive': 'manual drive',
@@ -600,6 +601,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if route == '/frame.jpg':
             self.frame()
+            return
+        if route in ('/enroll', '/face'):
+            # self-service face registration lives on the face service's HTTPS port (phones only give a
+            # page the camera over https); keep whatever host name the visitor used
+            h = self.headers.get('Host') or 'resp-desktop.local'
+            host = h[:h.index(']') + 1] if h.startswith('[') else h.split(':')[0]
+            self.send(302, 'text/plain', b'enroll', (('Location', f'https://{host}:{ENROLL_PORT}/enroll'),))
             return
         if not self.is_admin():
             if route == '/admin':

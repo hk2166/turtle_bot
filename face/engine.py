@@ -48,6 +48,32 @@ class Engine:
         return f.normed_embedding.astype(np.float32), bbox, float(f.det_score), ms
 
 
+    def analyze(self, frame_bgr, embed=True):
+        """Largest face with its 5 landmarks (for head pose), for the guided enrolment.
+        embed=False runs the detector only (fast, for the live preview).
+        Returns dict(n_faces, bbox, det, kps (5,2) or None, emb or None, ms)."""
+        t0 = time.perf_counter()
+        out = {'n_faces': 0, 'bbox': None, 'det': 0.0, 'kps': None, 'emb': None, 'ms': 0.0}
+        if frame_bgr is None or getattr(frame_bgr, 'ndim', 0) != 3:
+            return out
+        if embed:
+            faces = self.app.get(frame_bgr)
+            if faces:
+                f = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+                small = min(f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]) < MIN_FACE_PX
+                out.update(n_faces=len(faces), bbox=[float(x) for x in f.bbox], det=float(f.det_score),
+                           kps=np.asarray(f.kps, dtype=np.float32),
+                           emb=None if small or f.embedding is None else f.normed_embedding.astype(np.float32))
+        else:
+            bboxes, kpss = self.app.det_model.detect(frame_bgr, max_num=0, metric='default')
+            if bboxes is not None and len(bboxes):
+                i = int(np.argmax((bboxes[:, 2] - bboxes[:, 0]) * (bboxes[:, 3] - bboxes[:, 1])))
+                out.update(n_faces=len(bboxes), bbox=[float(x) for x in bboxes[i, :4]],
+                           det=float(bboxes[i, 4]), kps=None if kpss is None else kpss[i].astype(np.float32))
+        out['ms'] = (time.perf_counter() - t0) * 1000.0
+        return out
+
+
 def cosine(a, b):
     """Cosine similarity. b may be (512,) or (n, 512); returns a float or an (n,) array."""
     a = np.asarray(a, dtype=np.float32)

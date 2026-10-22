@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Register your face · Campus Bot</title>
+<style>
+:root{--bg:#f2f2f7;--card:#fff;--fg:#1c1c1e;--mut:#6c6c70;--line:#d1d1d6;--acc:#0a84ff;--ok:#34c759;
+  --bad:#ff3b30;--ring:#c7c7cc;--shadow:0 1px 3px rgba(0,0,0,.08)}
+@media (prefers-color-scheme:dark){:root{--bg:#000;--card:#1c1c1e;--fg:#f2f2f7;--mut:#98989f;--line:#38383a;
+  --acc:#0a84ff;--ok:#30d158;--bad:#ff453a;--ring:#48484a;--shadow:none}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);
+  font:17px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif}
+main{max-width:460px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:26px;font-weight:700;margin:8px 0 4px;letter-spacing:-.3px}
+.sub{color:var(--mut);margin:0 0 18px;font-size:15px}
+.card{background:var(--card);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow);margin-bottom:14px}
+label.f{display:block;font-size:13px;color:var(--mut);margin:2px 0 6px;text-transform:uppercase;letter-spacing:.4px}
+input[type=text],input[type=password]{width:100%;font:inherit;padding:11px 12px;border-radius:10px;
+  border:1px solid var(--line);background:var(--bg);color:var(--fg);outline:none}
+input[type=text]:focus,input[type=password]:focus{border-color:var(--acc)}
+.consent{display:flex;gap:10px;align-items:flex-start;font-size:15px;margin-top:12px}
+.consent input{width:22px;height:22px;margin-top:1px;flex:none;accent-color:var(--acc)}
+.stage{position:relative;width:min(84vw,330px);aspect-ratio:1;margin:8px auto 6px}
+.view{position:absolute;inset:8%;border-radius:50%;overflow:hidden;background:#111}
+.view video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:block}
+.view .ph{position:absolute;inset:0;display:grid;place-items:center;color:#8e8e93;font-size:64px}
+svg.ring{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.seg{fill:none;stroke:var(--ring);stroke-width:9;stroke-linecap:round;transition:stroke .25s}
+.seg.on{stroke:var(--ok)}
+.aim{fill:var(--acc);transition:cx .15s,cy .15s;opacity:.95}
+.done-check{position:absolute;inset:0;display:none;place-items:center}
+.done-check div{width:46%;aspect-ratio:1;border-radius:50%;background:var(--ok);display:grid;place-items:center;
+  color:#fff;font-size:72px;font-weight:700;animation:pop .35s ease-out}
+@keyframes pop{from{transform:scale(.4);opacity:0}to{transform:scale(1);opacity:1}}
+#hint{text-align:center;font-size:20px;font-weight:600;min-height:56px;margin:10px 4px 4px}
+#msg{text-align:center;font-size:15px;color:var(--mut);min-height:20px;margin:0 6px 10px}
+#msg.bad{color:var(--bad)}#msg.ok{color:var(--ok)}
+button{width:100%;font:inherit;font-weight:600;padding:14px;border-radius:12px;border:0;cursor:pointer}
+button.primary{background:var(--acc);color:#fff}
+button.primary:disabled{opacity:.4;cursor:default}
+button.ghost{background:transparent;color:var(--acc);margin-top:6px}
+button.danger{background:transparent;color:var(--bad);font-weight:500;font-size:15px}
+.priv{font-size:13px;color:var(--mut)}
+.priv b{color:var(--fg);font-weight:600}
+.hide{display:none!important}
+</style></head><body><main>
+<h1>Register your face</h1>
+<p class="sub">So the Campus Bot knows it’s you when it brings your delivery.</p>
+
+<div class="card" id="form">
+ <label class="f" for="pid">Your ID</label>
+ <input id="pid" type="text" placeholder="e.g. priya or priya.k" autocapitalize="none" autocorrect="off"
+        autocomplete="off" spellcheck="false" maxlength="64">
+ <div id="codewrap" class="hide" style="margin-top:12px">
+  <label class="f" for="code">Access code</label>
+  <input id="code" type="password" autocomplete="off" placeholder="from the robot admin">
+ </div>
+ <label class="consent"><input id="consent" type="checkbox">
+  <span>I agree to the robot storing an encrypted face template to recognise me at deliveries.
+  I can delete it any time.</span></label>
+</div>
+
+<div class="stage">
+ <div class="view"><video id="v" playsinline muted autoplay></video><div class="ph" id="ph">☺</div></div>
+ <svg class="ring" viewBox="0 0 300 300" id="ring" aria-hidden="true"></svg>
+ <div class="done-check" id="check"><div>✓</div></div>
+</div>
+<div id="hint">Tap Start, then slowly move your head in a circle</div>
+<div id="msg"></div>
+
+<button class="primary" id="start" disabled>Start</button>
+<button class="ghost hide" id="cancel">Cancel</button>
+
+<div class="card priv" style="margin-top:22px">
+ <b>What’s stored:</b> only an encrypted numeric template on the robot — <b>no photos</b>. Frames are
+ processed in memory and discarded. Used only to confirm deliveries to you.
+ <button class="danger" id="del">Delete my face data</button>
+</div>
+</main>
+<canvas id="c" class="hide"></canvas>
+<script>
+const $=id=>document.getElementById(id), N=12, CX=150, CY=150, R=141;
+let stream=null, token=null, running=false, codeRequired=false;
+
+// ---- ring: 12 arcs, sector 0 = right, counter-clockwise (matches the server's mirrored view)
+function pt(a,r){return [CX+r*Math.cos(a), CY-r*Math.sin(a)]}
+(function buildRing(){
+ const g=[], gap=0.10;
+ for(let i=0;i<N;i++){
+  const a0=i*2*Math.PI/N+gap, a1=(i+1)*2*Math.PI/N-gap, [x0,y0]=pt(a0,R), [x1,y1]=pt(a1,R);
+  g.push(`<path class="seg" id="s${i}" d="M${x0.toFixed(1)} ${y0.toFixed(1)} A${R} ${R} 0 0 0 ${x1.toFixed(1)} ${y1.toFixed(1)}"/>`);
+ }
+ g.push(`<circle class="aim hide" id="aim" r="7" cx="${CX}" cy="${CY}"/>`);
+ // idle demo: a dot orbiting the ring shows the motion before Start
+ g.push(`<circle id="demo" r="6" fill="var(--acc)" opacity=".7"><animateMotion dur="3.2s" repeatCount="indefinite"
+   path="M${CX+R} ${CY} A${R} ${R} 0 1 0 ${CX-R} ${CY} A${R} ${R} 0 1 0 ${CX+R} ${CY}"/></circle>`);
+ $('ring').innerHTML=g.join('');
+})();
+function paint(st){
+ (st.sectors||[]).forEach((on,i)=>$('s'+i).classList.toggle('on',!!on));
+ const aim=$('aim');
+ if(st.aim&&st.state==='capturing'){
+  const m=Math.min(1,Math.hypot(st.aim[0],st.aim[1])), a=Math.atan2(st.aim[1],st.aim[0]), [x,y]=pt(a,m*(R-14));
+  aim.setAttribute('cx',x.toFixed(1));aim.setAttribute('cy',y.toFixed(1));aim.classList.remove('hide');
+ } else aim.classList.add('hide');
+ if(st.hint)$('hint').textContent=st.hint;
+}
+const msg=(t,c)=>{$('msg').textContent=t||'';$('msg').className=c||''};
+const pid=()=>$('pid').value.trim().toLowerCase();
+const validId=()=>/^[a-z0-9][a-z0-9._-]{0,63}$/.test(pid());
+function refresh(){$('start').disabled=running||!validId()||!$('consent').checked||(codeRequired&&!$('code').value)}
+['pid','consent','code'].forEach(id=>$(id).addEventListener('input',refresh));
+$('consent').addEventListener('change',refresh);
+
+fetch('api/enroll/info').then(r=>r.json()).then(j=>{
+ codeRequired=!!j.code_required;$('codewrap').classList.toggle('hide',!codeRequired);
+ if(!j.model_ready)msg('The robot is still warming up its face model…');refresh();
+}).catch(()=>msg('Can’t reach the robot. Are you on the office WiFi?','bad'));
+
+async function openCam(){
+ if(!window.isSecureContext||!navigator.mediaDevices){
+  throw new Error('The camera needs the https:// address of this page (tap through the security warning once).')}
+ stream=await navigator.mediaDevices.getUserMedia({audio:false,
+   video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}});
+ $('v').srcObject=stream;await $('v').play();$('ph').classList.add('hide');
+}
+function closeCam(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}
+ $('v').srcObject=null;$('ph').classList.remove('hide')}
+function grab(){
+ const v=$('v'),c=$('c'),s=Math.min(1,640/Math.max(v.videoWidth,1));
+ c.width=Math.round(v.videoWidth*s);c.height=Math.round(v.videoHeight*s);
+ c.getContext('2d').drawImage(v,0,0,c.width,c.height);       // un-mirrored, as the camera sees it
+ return new Promise(r=>c.toBlob(r,'image/jpeg',0.8));
+}
+function ui(state){                       // idle | capturing | done
+ running=state==='capturing';
+ $('form').style.opacity=running?.5:1;$('form').style.pointerEvents=running?'none':'';
+ $('start').classList.toggle('hide',running);$('cancel').classList.toggle('hide',!running);
+ $('demo').style.display=state==='idle'?'':'none';
+ $('check').style.display=state==='done'?'grid':'none';
+ refresh();
+}
+
+async function run(mode){
+ msg('');$('check').style.display='none';
+ for(let i=0;i<N;i++)$('s'+i).classList.remove('on');
+ try{await openCam()}catch(e){msg(e.message||'Camera blocked: allow camera access for this page.','bad');return}
+ let j;
+ try{
+  const r=await fetch('api/enroll/start',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({person_id:pid(),consent:$('consent').checked,code:$('code').value,mode})});
+  j=await r.json();
+ }catch(e){closeCam();msg('Can’t reach the robot.','bad');return}
+ if(!j.ok){closeCam();msg(j.msg||'Could not start.','bad');return}
+ token=j.token;ui('capturing');paint(j);
+ let fails=0, st=j;
+ while(running&&st.state==='capturing'){
+  try{
+   const blob=await grab();
+   const r=await fetch('api/enroll/frame?token='+encodeURIComponent(token),
+     {method:'POST',headers:{'Content-Type':'image/jpeg'},body:blob});
+   st=await r.json();fails=0;paint(st);
+  }catch(e){if(++fails>8){st={state:'failed',msg:'Lost the connection to the robot.'};break}
+   await new Promise(r=>setTimeout(r,400))}
+ }
+ closeCam();
+ if(st.state==='done'){ui('done');for(let i=0;i<N;i++)if(mode==='enroll')$('s'+i).classList.add('on');
+  $('hint').textContent=mode==='enroll'?'You’re all set!':'Deleted';msg(st.msg,'ok')}
+ else{ui('idle');if(st.state!=='cancelled'){$('hint').textContent='Let’s try that again';msg(st.msg||st.hint,'bad')}
+  else{$('hint').textContent='Tap Start, then slowly move your head in a circle';msg(st.msg)}}
+ token=null;
+}
+$('start').onclick=()=>run('enroll');
+$('cancel').onclick=async()=>{running=false;
+ if(token)await fetch('api/enroll/cancel',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({token})}).catch(()=>{})};
+$('del').onclick=()=>{
+ if(!validId()){msg('Type your ID above first.','bad');$('pid').focus();return}
+ if(codeRequired&&!$('code').value){msg('Enter the access code above first.','bad');return}
+ if(!confirm(`Delete the face template for “${pid()}”? You’ll look at the camera for a second so the robot can check it’s really you.`))return;
+ run('delete');
+};
+</script></body></html>

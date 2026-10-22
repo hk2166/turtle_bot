@@ -25,20 +25,27 @@ FACE_CAM_IDLE seconds idle so it never holds the device against enrolment or the
 is absent (mount not built yet), /health says so and the camera endpoints return reason 'no_camera';
 the service still starts and serves /people and the image-based checks.
 """
+import hmac
 import json
 import os
+import socket
+import ssl
+import subprocess
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 import cv2
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import verify as verify_mod  # noqa: E402
 import identify as identify_mod  # noqa: E402
 from engine import Engine  # noqa: E402
 from face_store import FaceStore  # noqa: E402
+import enroll_session  # noqa: E402
 
 HOST = os.environ.get('FACE_HOST', '127.0.0.1')
 PORT = int(os.environ.get('FACE_PORT', '8070'))
@@ -48,14 +55,50 @@ CAM_H = int(os.environ.get('FACE_CAM_H', '720'))
 CAM_IDLE = float(os.environ.get('FACE_CAM_IDLE', '30'))
 WARMUP_FRAMES = 5
 MAX_BODY = 1 << 20
+# Self-service enrolment for the office WiFi (phones/laptops use their own camera, which browsers only
+# allow over HTTPS). Self-signed cert, kept OUT of the repo in ~/.campus_bot/tls/.
+ENROLL_PORT = int(os.environ.get('ENROLL_PORT', '8443'))
+ENROLL_HTTPS = os.environ.get('ENROLL_HTTPS', '1') != '0'
+ENROLL_CODE = os.environ.get('ENROLL_CODE', '')          # optional shared access code
+TLS_DIR = os.path.expanduser('~/.campus_bot/tls')
+MAX_FRAME = 2 << 20
+PAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'enroll_page.html')
+
+
+BRIO_VENDOR = '046d'     # Logitech: the mast Brio belongs to camera_node (AprilTags + EYES preview)
+
+
+def find_face_cam():
+    """The capture node of the first USB camera that is NOT the Brio (the HIKVISION), from sysfs, so no
+    udev rule is needed and a /dev/videoN renumbering after a replug doesn't matter."""
+    base = '/sys/class/video4linux'
+    try:
+        names = sorted(os.listdir(base), key=lambda n: int(n[5:]) if n[5:].isdigit() else 999)
+    except OSError:
+        return None
+    for n in names:
+        d = os.path.join(base, n)
+        try:
+            if open(os.path.join(d, 'index')).read().strip() != '0':     # 1 = the metadata node
+                continue
+            usb = os.path.realpath(os.path.join(d, 'device', '..'))      # the USB device directory
+            vendor = open(os.path.join(usb, 'idVendor')).read().strip()
+        except OSError:
+            continue                                                      # not a USB camera (Pi ISP etc.)
+        if vendor != BRIO_VENDOR:
+            return f'/dev/{n}'
+    return None
 
 
 def cam_device():
-    """The configured face camera: a /dev path, an int index, or None when nothing is attached."""
-    dev = os.environ.get('FACE_CAM', '/dev/face_cam')
+    """The face camera: FACE_CAM / FACE_CAM_INDEX if set, else /dev/face_cam (setup/10_face_cam.sh),
+    else the auto-detected non-Brio USB camera; None when nothing is attached."""
     if os.environ.get('FACE_CAM_INDEX') not in (None, ''):
         return int(os.environ['FACE_CAM_INDEX'])
-    return dev if dev and os.path.exists(dev) else None
+    for dev in (os.environ.get('FACE_CAM'), '/dev/face_cam'):
+        if dev and os.path.exists(dev):
+            return dev
+    return find_face_cam()
 
 
 class Cam:
@@ -122,6 +165,9 @@ class Service:
         self.cam = Cam(cam_device(), CAM_W, CAM_H, CAM_IDLE)
         self.engine = None
         self.model_error = None
+        self.infer = threading.Lock()          # one model call at a time (delivery checks + enrolment)
+        self.sessions = enroll_session.Sessions(self.store, lambda: self.engine, self.infer,
+                                                verify_mod.THRESHOLD)
         threading.Thread(target=self._load_model, daemon=True).start()
 
     def _load_model(self):
@@ -156,9 +202,10 @@ class Service:
         kw.update(extra)
         try:
             if images is not None:
-                r = fn['call'](frames=[str(p) for p in images], **kw)
+                with self.infer:
+                    r = fn['call'](frames=[str(p) for p in images], **kw)
             else:
-                with self.cam.lock:
+                with self.cam.lock, self.infer:
                     r = fn['call'](frames=self.cam.frames(), **kw)
             return 200, {'ok': True, **r}
         except RuntimeError as e:
@@ -221,11 +268,156 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+# ------------------------------------------------------------------ self-service enrolment (HTTPS)
+def _lan_ips():
+    try:
+        out = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=3).stdout.split()
+    except Exception:
+        out = []
+    return [ip for ip in out if not ip.startswith('fe80')]
+
+
+def ensure_cert():
+    """Self-signed cert for <host>.local + the current LAN IPs, regenerated when an IP is new (the robot
+    moved to the other WiFi). Returns (crt, key) paths, or None if openssl failed."""
+    os.makedirs(TLS_DIR, mode=0o700, exist_ok=True)
+    crt, key, sans_f = (os.path.join(TLS_DIR, n) for n in ('enroll.crt', 'enroll.key', 'sans.txt'))
+    host = socket.gethostname()
+    names = sorted({f'DNS:{host}.local', f'DNS:{host}', 'DNS:localhost', 'IP:127.0.0.1'} |
+                   {f'IP:{ip}' for ip in _lan_ips()})
+    have = open(sans_f).read().split(',') if os.path.exists(sans_f) else []
+    if os.path.exists(crt) and os.path.exists(key) and set(names) <= set(have):
+        return crt, key
+    r = subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '825',
+                        '-keyout', key, '-out', crt, '-subj', f'/CN={host}.local',
+                        '-addext', 'subjectAltName=' + ','.join(names)], capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f'enrolment HTTPS disabled: openssl failed: {r.stderr.strip()[:200]}', flush=True)
+        return None
+    os.chmod(key, 0o600)
+    with open(sans_f, 'w') as f:
+        f.write(','.join(names))
+    return crt, key
+
+
+class EnrollHandler(BaseHTTPRequestHandler):
+    """The office-WiFi side: only the enrolment page and its API are reachable here."""
+    svc = None
+
+    def _send(self, code, body, ctype='application/json', headers=()):
+        payload = body if isinstance(body, bytes) else json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(payload)))
+        self.send_header('Cache-Control', 'no-store')
+        for k, v in headers:
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _body(self, limit):
+        n = int(self.headers.get('Content-Length', 0) or 0)
+        if n > limit:
+            raise ValueError('too large')
+        return self.rfile.read(n) if n else b''
+
+    def do_GET(self):
+        u = urlparse(self.path)
+        if u.path in ('/', '/enroll/'):
+            return self._send(302, b'', 'text/plain', (('Location', '/enroll'),))
+        if u.path == '/enroll':
+            with open(PAGE_FILE, 'rb') as f:
+                return self._send(200, f.read(), 'text/html; charset=utf-8')
+        if u.path == '/api/enroll/info':
+            return self._send(200, {'code_required': bool(ENROLL_CODE), 'model_ready': self.svc.ready()})
+        if u.path == '/api/enroll/status':
+            return self._send(200, self.svc.sessions.status(parse_qs(u.query).get('token', [''])[0]))
+        self._send(404, {'ok': False, 'error': 'not found'})
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        try:
+            if u.path == '/api/enroll/frame':
+                tok = parse_qs(u.query).get('token', [''])[0]
+                buf = self._body(MAX_FRAME)
+                img = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR) if buf else None
+                del buf
+                st = self.svc.sessions.frame(tok, img)
+                del img                         # the frame never outlives this request
+                return self._send(200, st)
+            body = json.loads(self._body(MAX_BODY) or b'{}')
+            if not isinstance(body, dict):
+                raise ValueError('body must be a JSON object')
+        except (ValueError, json.JSONDecodeError) as e:
+            return self._send(400, {'ok': False, 'msg': f'bad request: {e}'})
+        if u.path == '/api/enroll/start':
+            if ENROLL_CODE and not hmac.compare_digest(str(body.get('code', '')).encode(), ENROLL_CODE.encode()):
+                time.sleep(1.0)
+                return self._send(200, {'ok': False, 'msg': 'Wrong access code.'})
+            return self._send(200, self.svc.sessions.start(str(body.get('person_id', '')),
+                                                           bool(body.get('consent')),
+                                                           str(body.get('mode', 'enroll'))))
+        if u.path == '/api/enroll/cancel':
+            return self._send(200, {'ok': self.svc.sessions.cancel(str(body.get('token', '')))})
+        self._send(404, {'ok': False, 'error': 'not found'})
+
+    def log_message(self, *a):
+        pass
+
+
+class TLSServer(ThreadingHTTPServer):
+    """HTTPS on every address, IPv4 and IPv6 (resp-desktop.local resolves to IPv6 on the Airtel WiFi).
+    The TLS handshake runs in the request thread, so a phone sitting on the cert warning can't block
+    accept() for everyone else."""
+    address_family = socket.AF_INET6
+    daemon_threads = True
+
+    def __init__(self, addr, handler, ctx):
+        self.ctx = ctx
+        super().__init__(addr, handler)
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+    def get_request(self):
+        sock, addr = self.socket.accept()
+        sock.settimeout(15)
+        return self.ctx.wrap_socket(sock, server_side=True, do_handshake_on_connect=False), addr
+
+    def finish_request(self, request, client_address):
+        try:
+            request.do_handshake()
+        except (ssl.SSLError, OSError):         # e.g. a browser closing on the cert warning
+            return
+        super().finish_request(request, client_address)
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+def start_enroll_server(svc):
+    if not ENROLL_HTTPS:
+        return None
+    cert = ensure_cert()
+    if cert is None:
+        return None
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(*cert)
+    EnrollHandler.svc = svc
+    srv = TLSServer(('::', ENROLL_PORT), EnrollHandler, ctx)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    print(f'self-service enrolment on https://{socket.gethostname()}.local:{ENROLL_PORT}/enroll '
+          f'(self-signed cert; access code {"ON" if ENROLL_CODE else "off"})', flush=True)
+    return srv
+
+
 def main():
     Handler.svc = Service()
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f'face service on http://{HOST}:{PORT}  (camera {cam_device()}, det_size {DET_SIZE}); '
           f'model loading in the background', flush=True)
+    start_enroll_server(Handler.svc)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

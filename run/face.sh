@@ -17,7 +17,8 @@ case "${1:-on}" in
     is_running face && { ok "face service already on"; exit 0; }
     [[ -x "$VENV_PY" ]] || { err "face venv missing: $VENV_PY"; \
       info "create it: python3 -m venv ~/.venvs/face && ~/.venvs/face/bin/pip install -r face/requirements.txt"; exit 1; }
-    [[ -e /dev/face_cam ]] || warn "no /dev/face_cam yet (plug the 2nd camera, then: sudo bash setup/10_face_cam.sh). Service starts without it."
+    # the service finds the HIKVISION itself (any USB camera that isn't the Brio); /dev/face_cam is optional
+    [[ -e /dev/face_cam ]] || ls /sys/class/video4linux/ >/dev/null 2>&1 || warn "no camera found: the service starts without one"
     start_bg face "$VENV_PY" "$PROJECT_DIR/face/face_service.py"
     for _ in $(seq 20); do
       curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break; sleep 0.25

@@ -47,6 +47,27 @@ python face/verify.py hemant --images a.jpg b.jpg    # from files
 Exit code 0 = accept, 1 = reject, 2 = error. Stops at the first frame ≥ threshold; the 2 s budget is checked
 between frames. **0.42 is a placeholder** until calibration has impostor data.
 
+## Self-service enrolment for the office (added 2026-10-22) — the way to enrol people now
+
+Anyone on the office WiFi opens **`https://resp-desktop.local:8443/enroll`** (or taps ☺ REGISTER MY
+FACE on the call page; `http://resp-desktop.local:8088/enroll` redirects there) on their **own phone or
+laptop**: ID, consent box, Start, then they roll their head slowly in a circle while a Face-ID-style ring
+of 12 head directions fills in (~30 s). The browser only captures and displays; it posts ~4 small frames
+a second, the robot embeds each in memory, updates the ring and sends the next hint. Only the final
+embeddings are stored (encrypted). Logic: `enroll_session.py`; page: `enroll_page.html`; served by
+`face_service.py` (starts at boot via `run/autostart.sh`).
+
+- **HTTPS is required** (browsers only give a page the camera over https). The service makes a
+  self-signed cert for `<host>.local` + its LAN IPs in `~/.campus_bot/tls/` (never commit), so each
+  person taps through one "not private → proceed / visit this website" warning the first time.
+- **Firewall:** ufw is on — open the port once: `sudo ufw allow 8443/tcp`.
+- **Safety:** consent required; re-enrolling an existing ID only works if the new face matches the
+  old one (nobody can take over someone's ID); "Delete my face data" deletes only after a live face
+  check against that ID; up to 4 people at once; optional shared code with `ENROLL_CODE=…`.
+- At the robot instead (no phone): `face/enroll_local.py <id> --consent`.
+- The face camera is found automatically (the first USB camera that isn't the Logitech Brio);
+  `FACE_CAM=/dev/videoN` or `setup/10_face_cam.sh` (`/dev/face_cam`) override it.
+
 ## Live service — identify + verify during delivery (added 2026-10-22)
 
 `verify.py`/`identify.py` load the model every run (seconds), which blows the 2 s handover budget. For
