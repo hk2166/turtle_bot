@@ -559,34 +559,49 @@ function renderQueue(s){
   (s.places||[]).forEach(p=>{const r=document.createElement('div');r.className='qrow';
    r.appendChild(mk('span',`📍 ${(s.places||[]).indexOf(p)+1} · ${p.name}  (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`));
    const b=mk('button','✕ DELETE');b.onclick=()=>pDelete(p.id,p.name);r.appendChild(b);box.appendChild(r)})}}
-function feed(on){feedOn=on;document.getElementById('camoff').style.display=on?'none':'';
- if(!on){document.getElementById('cam').src='';document.getElementById('facepip').style.display='none'}}
+function feed(on){feedOn=on;syncFeeds()}
 // EYES source: the mast Brio, the face HIKVISION (boxed + named by the face service), or both (PiP)
 // default MAST: the face view runs the face model (~a quarter of a core per open tab), so it's opt-in here;
 // QUEUE & PLACES always shows it
 let camSrc=(()=>{try{return localStorage.getItem('camSrc')||'mast'}catch(e){return 'mast'}})();
 function setSrc(s){camSrc=s;try{localStorage.setItem('camSrc',s)}catch(e){}
  ['mast','face','both'].forEach(k=>document.getElementById('src'+k).classList.toggle('on',k==s));
- document.getElementById('facepip').style.display='none';document.getElementById('facenote').textContent=''}
-async function pollFace(){
- // only while it's on screen: QUEUE & PLACES always shows it, MISSION CONTROL unless EYES = MAST
- const q=view=='queue', want=!document.hidden&&(q||(feedOn&&view=='mission'&&camSrc!='mast'));
- if(want){const pip=!q&&camSrc=='both',el=document.getElementById(q?'qface':pip?'facepip':'cam'),
-   note=document.getElementById(q?'qfacenote':'facenote');
-  try{const r=await fetch('/face_frame.jpg?'+Date.now());
-   if(r.ok){const u=URL.createObjectURL(await r.blob());el.onload=()=>URL.revokeObjectURL(u);el.src=u;
-    if(pip)el.style.display='';note.textContent='';if(q)document.getElementById('qfaceoff').style.display='none'}
-   else{const t=(await r.text()).slice(0,60);note.textContent=q?'· '+t:'face cam: '+t;
-    if(pip)el.style.display='none';if(q){el.removeAttribute('src');const o=document.getElementById('qfaceoff');
-     o.style.display='';o.textContent=t}}}catch(e){}}
- setTimeout(pollFace,want?150:1000)}
-async function pollCam(){
- if(feedOn&&view!='queue'&&!(camSrc=='face'&&view!='manual')){const c=document.getElementById(view=='manual'?'cam2':'cam');
-  try{const r=await fetch('/frame.jpg?'+Date.now());
-   if(r.ok){const b=await r.blob();const u=URL.createObjectURL(b);
-    c.onload=()=>URL.revokeObjectURL(u);c.src=u;document.getElementById('camoff').style.display='none'}
-   else document.getElementById('camoff').textContent=await r.text()}catch(e){}}
- setTimeout(pollCam,feedOn?60:1000)}   // next frame right after this one (camera previews at 8 Hz)
+ document.getElementById('facenote').textContent='';syncFeeds()}
+// Live feeds are MJPEG streams: the robot pushes each frame the moment it exists, no per-frame requests.
+// An <img> holds a stream only while it is on screen; otherwise it points at a blank image, which closes
+// the connection (and the robot stops decoding that camera a few seconds later).
+const BLANK='data:image/gif;base64,R0lGODlhAQABAAAAACw=', FEEDS=['cam','facepip','cam2','qface'], feedRetry={};
+function wantFeed(id){
+ if(document.hidden)return '';
+ const m=view=='mission'&&feedOn;
+ if(id=='cam')return m?(camSrc=='face'?'/face_stream.mjpg':'/eyes_stream.mjpg'):'';
+ if(id=='facepip')return m&&camSrc=='both'?'/face_stream.mjpg':'';
+ if(id=='cam2')return view=='manual'?'/eyes_stream.mjpg':'';
+ if(id=='qface')return view=='queue'?'/face_stream.mjpg':'';
+ return ''}
+function syncFeeds(){
+ FEEDS.forEach(id=>{const el=document.getElementById(id),w=wantFeed(id);
+  if(w&&feedRetry[id]&&Date.now()<feedRetry[id])return;        // backing off after an error
+  if(w===(el.dataset.stream||''))return;
+  el.dataset.stream=w;el.src=w?w+'?t='+Date.now():BLANK;
+  if(id=='facepip'&&!w)el.style.display='none'});
+ const off=document.getElementById('camoff');
+ if(!feedOn){off.style.display='';off.textContent='feed off'}else if(off.textContent=='feed off')off.style.display='none'}
+FEEDS.forEach(id=>{const el=document.getElementById(id);
+ el.addEventListener('load',()=>{const s=el.dataset.stream||'';if(!s)return;feedRetry[id]=0;
+  if(id=='facepip')el.style.display='';
+  if(s.startsWith('/face'))document.getElementById(id=='qface'?'qfacenote':'facenote').textContent='';
+  if(id=='qface')document.getElementById('qfaceoff').style.display='none';
+  if(id=='cam')document.getElementById('camoff').style.display='none'});
+ el.addEventListener('error',()=>{const s=el.dataset.stream||'';if(!s)return;    // stream failed: say why, retry in 3 s
+  el.dataset.stream='';feedRetry[id]=Date.now()+3000;if(id=='facepip')el.style.display='none';
+  const face=s.startsWith('/face');
+  fetch(face?'/face_frame.jpg':'/frame.jpg').then(r=>r.ok?'reconnecting…':r.text()).then(t=>{t=String(t).slice(0,60);
+   if(face)document.getElementById(id=='qface'?'qfacenote':'facenote').textContent=(id=='qface'?'· ':'face cam: ')+t;
+   if(id=='qface'){const o=document.getElementById('qfaceoff');o.style.display='';o.textContent=t}
+   if(id=='cam'&&!face){const o=document.getElementById('camoff');o.style.display='';o.textContent=t}}).catch(()=>{})})});
+document.addEventListener('visibilitychange',syncFeeds);
+setInterval(syncFeeds,400);
 let events='';let tab='events';
 function setTab(t,btn){tab=t;document.querySelectorAll('.tab').forEach(b=>b.classList.remove('on'));
  if(btn)btn.classList.add('on');renderLog(events)}
@@ -676,5 +691,5 @@ setInterval(async()=>{try{
   im.src='/map.png?'+Date.now()}
  draw();
 }catch(e){document.getElementById('nav').textContent='PANEL OFFLINE?'}},700);
-pollCam();setSrc(camSrc);pollFace();
+setSrc(camSrc);
 </script></body></html>

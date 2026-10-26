@@ -134,5 +134,11 @@ Rows go to `~/.campus_bot/calib/scores.csv`. It holds scores only, no images.
 - **Never commit `~/.campus_bot/`** (`faces/`, `faces.key`, calibration CSVs, `tls/`) or any ngrok token.
   Losing `faces.key` means everyone re-enrols. Back up `faces/` + `faces.key` together, somewhere other
   than git.
-- **CPU:** the model runs on 2 threads (`FACE_THREADS`; measured fastest and half the CPU of 4). A
-  dashboard tab showing the face feed costs ~35% of one core (name box every 1.5 s); viewers share frames.
+- **CPU:** the model runs on 2 threads (`FACE_THREADS`; measured fastest and half the CPU of 4).
+- **Live feed = MJPEG streams** (`/face_stream.mjpg`, `/eyes_stream.mjpg` on the dashboard): the robot
+  pushes frames as they exist. One grabber thread reads the face camera for everyone (streams and
+  delivery checks), grabbing every frame but decoding only `FACE_DECODE_FPS` (15; the camera runs at
+  25, so ~12.5 fps reach the browser); recognition for the name box runs in its own thread every 1.5 s,
+  so it never stalls the video; viewers share each encoded frame. Measured 2026-10-26: ~12.5 fps,
+  ≤ ~95 ms between frames, ~31% of one core for one viewer, ~34% for three, 0% and the camera released
+  ~5 s after the last viewer leaves.

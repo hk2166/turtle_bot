@@ -52,7 +52,10 @@ PORT = int(os.environ.get('FACE_PORT', '8070'))
 DET_SIZE = int(os.environ.get('FACE_DET_SIZE', '640'))
 CAM_W = int(os.environ.get('FACE_CAM_W', '1280'))
 CAM_H = int(os.environ.get('FACE_CAM_H', '720'))
-CAM_IDLE = float(os.environ.get('FACE_CAM_IDLE', '30'))
+CAM_IDLE = float(os.environ.get('FACE_CAM_IDLE', '5'))     # s the grabber keeps decoding after the last use
+CAM_FPS = int(os.environ.get('FACE_CAM_FPS', '30'))
+DECODE_FPS = float(os.environ.get('FACE_DECODE_FPS', '15'))  # frames actually decoded per second
+STREAM_FPS = float(os.environ.get('FACE_STREAM_FPS', '15'))  # dashboard stream rate (per viewer, max)
 WARMUP_FRAMES = 5
 MAX_BODY = 1 << 20
 # Self-service enrolment for the office WiFi (phones/laptops use their own camera, which browsers only
@@ -102,22 +105,33 @@ def cam_device():
 
 
 class Cam:
-    """One warm cv2 capture, opened on demand and reaped after idle. Callers hold `lock` for a whole
-    check so the camera and the (single-threaded) model are used by one request at a time."""
-    def __init__(self, device, w, h, idle):
-        self.device, self.w, self.h, self.idle = device, w, h, idle
+    """The face camera, read by ONE background grabber thread while anyone wants frames (a dashboard
+    stream, a delivery check). Everyone gets the newest frame instead of a stale buffered one, and
+    several consumers never fight over the device. The grabber stops and releases the camera `idle` s
+    after the last want, so an unwatched robot spends no CPU decoding video.
+    `lock` is kept for callers that want a whole check to themselves (verify/identify)."""
+    def __init__(self, device, w, h, idle, fps):
+        self.device, self.w, self.h, self.idle, self.fps = device, w, h, idle, fps
         self.rotate = verify_mod.cam_rotation()     # the mount holds it upside-down (config/face_cam.yaml)
-        self.cap = None
-        self.last = 0.0
         self.lock = threading.Lock()
-        threading.Thread(target=self._reaper, daemon=True).start()
+        self.cond = threading.Condition()
+        self.frame, self.seq, self.error = None, 0, None
+        self.want_until = 0.0
+        self.thread = None
 
     def available(self):
         return self.device is not None and (isinstance(self.device, int) or os.path.exists(self.device))
 
-    def _ensure(self):
-        if self.cap is not None and self.cap.isOpened():
-            return self.cap
+    def want(self, secs=None):
+        """Keep the grabber running for at least `secs` more (default: idle)."""
+        with self.cond:
+            self.want_until = max(self.want_until, time.time() + (secs or self.idle))
+            if self.thread is None or not self.thread.is_alive():
+                self.error = None
+                self.thread = threading.Thread(target=self._grab, daemon=True)
+                self.thread.start()
+
+    def _open(self):
         if not self.available():
             raise RuntimeError('no_camera')
         cap = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
@@ -126,44 +140,76 @@ class Cam:
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.w)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.h)
+        cap.set(cv2.CAP_PROP_FPS, self.fps)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         for _ in range(WARMUP_FRAMES):
             cap.read()
-        self.cap = cap
         return cap
 
+    def _grab(self):
+        cap = None
+        try:
+            cap = self._open()
+            # The HIKVISION only does 25/30 fps at 720p, but nothing here needs more than ~15: grab()
+            # every frame (cheap, keeps the newest one) and decode (retrieve, the costly part) at DECODE_FPS.
+            period, nxt = 1.0 / max(1.0, DECODE_FPS), 0.0
+            while time.time() < self.want_until:
+                if not cap.grab():
+                    raise RuntimeError('camera read failed (device dropped?)')
+                if time.time() < nxt:
+                    continue
+                nxt = time.time() + period * 0.8      # slack: frame timing jitters at 30 fps
+                ok, fr = cap.retrieve()
+                if not ok:
+                    raise RuntimeError('camera decode failed')
+                fr = verify_mod.upright(fr, self.rotate)
+                with self.cond:
+                    self.frame = fr
+                    self.seq += 1
+                    self.cond.notify_all()
+        except Exception as e:
+            with self.cond:
+                self.error = str(e)
+                self.cond.notify_all()
+        finally:
+            if cap is not None:
+                cap.release()
+            with self.cond:
+                self.frame = None           # never serve a frozen frame after the device is released
+
+    def latest(self, after=-1, timeout=3.0):
+        """(frame, seq) newer than `after` (the caller must not modify the frame). RuntimeError if the
+        camera can't deliver ('no_camera' when nothing is attached)."""
+        self.want()
+        deadline = time.time() + timeout
+        with self.cond:
+            while self.frame is None or self.seq <= after:
+                if self.error is not None and not (self.thread and self.thread.is_alive()):
+                    raise RuntimeError(self.error)
+                left = deadline - time.time()
+                if left <= 0:
+                    raise RuntimeError(self.error or 'no frames from the face camera')
+                self.cond.wait(left)
+            return self.frame, self.seq
+
     def frames(self):
-        """Generator of fresh frames from the warm camera; the caller must hold `lock`."""
-        cap = self._ensure()
-        self.last = time.time()
+        """Generator of successive new frames (for verify/identify's best-of-N)."""
+        seq = -1
         while True:
-            ok, fr = cap.read()
-            if not ok:
-                self._release()
-                raise RuntimeError('camera read failed (device dropped?)')
-            self.last = time.time()
-            yield verify_mod.upright(fr, self.rotate)
-
-    def _release(self):
-        if self.cap is not None:
-            try:
-                self.cap.release()
-            except Exception:
-                pass
-            self.cap = None
-
-    def _reaper(self):
-        while True:
-            time.sleep(5)
-            with self.lock:
-                if self.cap is not None and time.time() - self.last > self.idle:
-                    self._release()
+            f, seq = self.latest(seq)
+            yield f
 
 
 class Service:
     def __init__(self):
         self.store = FaceStore()
-        self.cam = Cam(cam_device(), CAM_W, CAM_H, CAM_IDLE)
+        self.cam = Cam(cam_device(), CAM_W, CAM_H, CAM_IDLE, CAM_FPS)
+        self.viewers, self.view_t = 0, 0.0      # who is watching the preview (drives the annotator)
+        self.vlock = threading.Lock()
+        self.ann = {'t': 0.0, 'bbox': None, 'label': '', 'known': False, 'w': 1}
+        self.ann_thread = None
+        self.enc_lock = threading.Lock()
+        self.enc = {}                           # annotate -> (seq, jpeg): one encode per frame, shared
         self.engine = None
         self.model_error = None
         self.infer = threading.Lock()          # one model call at a time (delivery checks + enrolment)
@@ -207,6 +253,8 @@ class Service:
                 with self.infer:
                     r = fn['call'](frames=[str(p) for p in images], **kw)
             else:
+                if not self.cam.available():
+                    raise RuntimeError('no_camera')
                 with self.cam.lock, self.infer:
                     r = fn['call'](frames=self.cam.frames(), **kw)
             return 200, {'ok': True, **r}
@@ -230,37 +278,29 @@ class Service:
             self._roster_c = (time.time(), names, embs)
         return names, embs
 
-    PREVIEW_SHARE = 0.12  # s: every viewer polling within this window gets the same JPEG (CPU stays flat)
+    PREVIEW_W = 640
 
-    def preview(self, annotate=True, width=640):
-        """(jpeg bytes, None) of the face camera now, boxed and named when annotate; (None, why) if not.
-        Shared: several dashboard tabs polling at once cost one capture + encode, not one each."""
-        cache = getattr(self, '_pv', {})
-        hit = cache.get(annotate)
-        if hit and time.time() - hit[0] < self.PREVIEW_SHARE:
-            return hit[1], None
-        jpg, why = self._preview(annotate, width)
-        if jpg is not None:
-            cache[annotate] = (time.time(), jpg)
-            self._pv = cache
-        return jpg, why
+    def _touch_view(self, delta=0):
+        """A viewer arrived/left (delta) or a snapshot was served (0): keeps the annotator running."""
+        with self.vlock:
+            self.viewers += delta
+            self.view_t = time.time()
+            if self.ann_thread is None or not self.ann_thread.is_alive():
+                self.ann_thread = threading.Thread(target=self._annotator, daemon=True)
+                self.ann_thread.start()
 
-    def _preview(self, annotate, width):
-        if not self.cam.available():
-            return None, 'no face camera connected'
-        if not self.cam.lock.acquire(timeout=1.5):        # a delivery check is using the camera
-            return None, 'face camera busy'
-        try:
-            frame = next(self.cam.frames())
-        except RuntimeError as e:
-            return None, str(e)
-        finally:
-            self.cam.lock.release()
-        now = time.time()
-        ann = getattr(self, '_ann', {'t': 0.0, 'bbox': None})
-        if annotate and self.ready() and now - ann['t'] > self.ANN_EVERY and self.infer.acquire(blocking=False):
+    def _annotator(self):
+        """Recognise the face in view every ANN_EVERY s while someone watches, off the video path, so
+        the stream never waits for the model. Skips a round when a delivery check holds the model."""
+        while self.viewers > 0 or time.time() - self.view_t < 3.0:
+            time.sleep(self.ANN_EVERY)
+            if not self.ready() or not self.infer.acquire(blocking=False):
+                continue
             try:
+                frame, _seq = self.cam.latest(timeout=1.0)
                 a = self.engine.analyze(frame, embed=True)
+            except RuntimeError:
+                continue
             finally:
                 self.infer.release()
             label, known = '', False
@@ -278,22 +318,67 @@ class Service:
                     label = 'nobody enrolled'
             elif a['bbox'] is not None:
                 label = 'face unclear'
-            ann = self._ann = {'t': now, 'bbox': a['bbox'], 'label': label, 'known': known}
-        if annotate and ann.get('bbox') is not None and now - ann['t'] < self.ANN_KEEP:
-            x1, y1, x2, y2 = (int(v) for v in ann['bbox'])
-            col = (80, 200, 60) if ann['known'] else (0, 170, 255)          # BGR: green / amber
-            cv2.rectangle(frame, (x1, y1), (x2, y2), col, 3)
-            if ann['label']:
-                (tw, th), _ = cv2.getTextSize(ann['label'], cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
-                ty = max(th + 12, y1)
-                cv2.rectangle(frame, (x1, ty - th - 12), (x1 + tw + 12, ty), col, -1)
-                cv2.putText(frame, ann['label'], (x1 + 6, ty - 7), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
-                            (0, 0, 0), 2, cv2.LINE_AA)
-        h, w = frame.shape[:2]
-        if w > width:
-            frame = cv2.resize(frame, (width, int(h * width / w)), interpolation=cv2.INTER_AREA)
-        ok, jpg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-        return (jpg.tobytes(), None) if ok else (None, 'encode failed')
+            self.ann = {'t': time.time(), 'bbox': a['bbox'], 'label': label, 'known': known,
+                        'w': frame.shape[1]}
+
+    def _encoded(self, frame, seq, annotate):
+        """JPEG of this frame (downscaled, boxed); encoded once per frame however many viewers."""
+        with self.enc_lock:
+            hit = self.enc.get(annotate)
+            if hit and hit[0] == seq:
+                return hit[1]
+            h, w = frame.shape[:2]
+            s = min(1.0, self.PREVIEW_W / w)
+            small = cv2.resize(frame, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA) if s < 1 else frame.copy()
+            ann = self.ann
+            if annotate and ann.get('bbox') is not None and time.time() - ann['t'] < self.ANN_KEEP:
+                k = small.shape[1] / max(ann.get('w', w), 1)
+                x1, y1, x2, y2 = (int(v * k) for v in ann['bbox'])
+                col = (80, 200, 60) if ann['known'] else (0, 170, 255)          # BGR: green / amber
+                cv2.rectangle(small, (x1, y1), (x2, y2), col, 2)
+                if ann['label']:
+                    (tw, th), _ = cv2.getTextSize(ann['label'], cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                    ty = max(th + 10, y1)
+                    cv2.rectangle(small, (x1, ty - th - 10), (x1 + tw + 10, ty), col, -1)
+                    cv2.putText(small, ann['label'], (x1 + 5, ty - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                                (0, 0, 0), 2, cv2.LINE_AA)
+            ok, jpg = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 72])
+            if not ok:
+                raise RuntimeError('encode failed')
+            jpg = jpg.tobytes()
+            self.enc[annotate] = (seq, jpg)
+            return jpg
+
+    def preview(self, annotate=True):
+        """(jpeg bytes, None) of the face camera now, boxed and named when annotate; (None, why) if not."""
+        if not self.cam.available():
+            return None, 'no face camera connected'
+        if annotate:
+            self._touch_view()
+        try:
+            frame, seq = self.cam.latest()
+            return self._encoded(frame, seq, annotate), None
+        except RuntimeError as e:
+            return None, str(e)
+
+    def stream(self, annotate=True, fps=STREAM_FPS):
+        """Generator of JPEGs for one MJPEG viewer: the newest frame each time, at most `fps` a second."""
+        if annotate:
+            self._touch_view(+1)
+        period, seq, nxt = 1.0 / max(1.0, min(fps, 30.0)), -1, 0.0
+        try:
+            while True:
+                wait = nxt - time.time()
+                if wait > 0:
+                    time.sleep(wait)
+                frame, seq = self.cam.latest(seq)
+                nxt = time.time() + period
+                if annotate:
+                    self.view_t = time.time()
+                yield self._encoded(frame, seq, annotate)
+        finally:
+            if annotate:
+                self._touch_view(-1)
 
     def verify(self, body):
         pid = str(body.get('person_id', '')).strip().lower()
@@ -318,6 +403,38 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):
+        if self.path.startswith('/stream.mjpg'):         # live MJPEG stream (dashboard, admin)
+            q = parse_qs(urlparse(self.path).query)
+            annotate = q.get('ann', ['1'])[0] != '0'
+            try:
+                fps = float(q.get('fps', [STREAM_FPS])[0])
+            except ValueError:
+                fps = STREAM_FPS
+            if not self.svc.cam.available():
+                return self._send(503, {'ok': False, 'error': 'no face camera connected'})
+            gen = self.svc.stream(annotate, fps)
+            try:
+                first = next(gen)                         # fail with a clean 503 before any headers
+            except RuntimeError as e:
+                gen.close()
+                return self._send(503, {'ok': False, 'error': str(e)})
+            self.send_response(200)
+            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            try:
+                jpg = first
+                while True:
+                    self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: '
+                                     + str(len(jpg)).encode() + b'\r\n\r\n' + jpg + b'\r\n')
+                    self.wfile.flush()
+                    jpg = next(gen)
+            except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError):
+                pass                                      # viewer closed the tab / camera dropped
+            finally:
+                gen.close()
+            return
         if self.path.startswith('/frame.jpg'):           # live face-camera preview (dashboard, admin)
             jpg, why = self.svc.preview(annotate='ann=0' not in self.path)
             if jpg is None:

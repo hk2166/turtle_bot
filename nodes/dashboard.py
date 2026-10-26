@@ -572,6 +572,54 @@ class Handler(BaseHTTPRequestHandler):
         # the robot itself (scripts, curl on the Pi) is trusted; everyone else needs a login
         return self.client_address[0] in ('127.0.0.1', '::1', '::ffff:127.0.0.1') or self.auth.valid(self.token())
 
+    def proxy_stream(self, url):
+        """Pass an MJPEG stream (the face service's) through to the browser until either side closes."""
+        import urllib.request
+        try:
+            up = urllib.request.urlopen(url, timeout=6)
+        except Exception as e:
+            msg = getattr(e, 'read', lambda: b'')() or str(e).encode()
+            self.send(503, 'text/plain', msg[:200])
+            return
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', up.headers.get('Content-Type', 'multipart/x-mixed-replace; boundary=frame'))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            while True:
+                chunk = up.read1(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            up.close()
+
+    def eyes_stream(self, fps=15.0):
+        """The mast camera as MJPEG: each new preview frame pushed as soon as it exists (no polling)."""
+        self.send_response(200)
+        self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        last, period = None, 1.0 / fps
+        try:
+            while True:
+                jpg, _err = self.cam.get()
+                if not jpg and self.ros.cam_jpg and time.time() - self.ros.cam_t < 3.0:
+                    jpg = self.ros.cam_jpg
+                if jpg and jpg is not last:
+                    self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: '
+                                     + str(len(jpg)).encode() + b'\r\n\r\n' + jpg + b'\r\n')
+                    self.wfile.flush()
+                    last = jpg
+                time.sleep(period)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
     def frame(self):
         jpg, err = self.cam.get()
         if not jpg and self.ros.cam_jpg and time.time() - self.ros.cam_t < 3.0:
@@ -617,6 +665,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if route == '/admin':
             self.send(200, 'text/html; charset=utf-8', PAGE)
+        elif route == '/face_stream.mjpg':      # the HIKVISION live (MJPEG), boxed + named (admin only)
+            q = self.path.split('?', 1)[1] if '?' in self.path else ''
+            self.proxy_stream(f'{face_client.BASE}/stream.mjpg?{q}')
+        elif route == '/eyes_stream.mjpg':      # the mast camera live (MJPEG)
+            self.eyes_stream()
         elif route == '/face_frame.jpg':        # the HIKVISION, boxed + named by the face service (admin only)
             jpg, why = face_client.frame(annotate='ann=0' not in self.path)
             if jpg is None:
