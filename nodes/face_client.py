@@ -68,6 +68,20 @@ def people(timeout=QUICK_TIMEOUT):
     return r.get('people', []) if r.get('ok') else []
 
 
+def frame(annotate=True, timeout=3.0):
+    """(jpeg bytes, None) of the face camera with the live name overlay, or (None, why)."""
+    try:
+        with urllib.request.urlopen(f'{BASE}/frame.jpg{"" if annotate else "?ann=0"}', timeout=timeout) as r:
+            return r.read(), None
+    except urllib.error.HTTPError as e:
+        try:
+            return None, e.read().decode('utf-8', 'replace')[:120]
+        except Exception:
+            return None, f'http {e.code}'
+    except Exception as e:
+        return None, f'face service unreachable ({e.__class__.__name__})'
+
+
 def verify(person_id, timeout=VERIFY_TIMEOUT, **kw):
     """1:1. Returns the service result; accepted is only ever True on a real match."""
     return _post('/verify', {'person_id': person_id, **kw}, timeout)

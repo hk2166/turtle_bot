@@ -23,6 +23,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from engine import Engine  # noqa: E402
 from face_store import FaceStore, check_person_id  # noqa: E402
+from verify import cam_rotation, upright  # noqa: E402
 
 MIN_GOOD = 5
 MIN_DET_SCORE = 0.6
@@ -44,10 +45,13 @@ def open_cam(device, w=1280, h=720):
     return cap
 
 
+ROTATE = cam_rotation()            # the face camera's mount holds it upside-down (config/face_cam.yaml)
+
+
 def fresh(cap):
     cap.grab()                      # drop the buffered frame so we embed what is in front of it NOW
     ok, f = cap.read()
-    return f if ok else None
+    return upright(f, ROTATE) if ok else None
 
 
 def main():

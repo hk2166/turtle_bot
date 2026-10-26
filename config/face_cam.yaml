@@ -1,0 +1,8 @@
+# The face camera (HIKVISION DS-U02, the 2nd USB camera; read by face/face_service.py and
+# face/enroll_local.py). FACE_CAM_ROTATE in the environment overrides this.
+#
+# rotate: degrees to turn the camera's picture CLOCKWISE so faces are upright: 0, 90, 180 or 270.
+# The printed mount holds it upside-down: measured 2026-10-26 by running the detector on live frames
+# at all four rotations; only 180 found the face in every frame (det 0.72-0.88). Change it if you
+# remount the camera, then: run/face.sh off && run/face.sh on
+rotate: 180

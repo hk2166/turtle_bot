@@ -18,6 +18,7 @@ Exit code: 0 accepted, 1 rejected, 2 error (not enrolled, no camera).
 import argparse
 import json
 import os
+import re
 import sys
 import time
 
@@ -56,6 +57,32 @@ def open_camera(index=0):
     for _ in range(WARMUP_FRAMES):
         cap.read()
     return cap
+
+
+CAM_CONFIG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'face_cam.yaml')
+_ROTATE = {0: None, 90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
+
+
+def cam_rotation():
+    """Degrees (clockwise) the FACE camera's picture must turn to be upright: FACE_CAM_ROTATE, else
+    `rotate:` in config/face_cam.yaml, else 0. Its mount holds it upside-down -> 180 (2026-10-26).
+    The detector can't find a face lying on its side or upside-down, so this matters for recognition."""
+    v = os.environ.get('FACE_CAM_ROTATE')
+    if v in (None, ''):
+        try:
+            m = re.search(r'^\s*rotate\s*:\s*(-?\d+)', open(CAM_CONFIG).read(), re.M)
+            v = m.group(1) if m else 0
+        except OSError:
+            v = 0
+    deg = int(v) % 360
+    if deg not in _ROTATE:
+        raise ValueError(f'face camera rotate must be 0, 90, 180 or 270 (got {v})')
+    return deg
+
+
+def upright(frame, deg):
+    code = _ROTATE.get(deg)
+    return frame if code is None or frame is None else cv2.rotate(frame, code)
 
 
 def camera_frames(cap):

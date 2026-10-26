@@ -67,6 +67,11 @@ embeddings are stored (encrypted). Logic: `enroll_session.py`; page: `enroll_pag
 - At the robot instead (no phone): `face/enroll_local.py <id> --consent`.
 - The face camera is found automatically (the first USB camera that isn't the Logitech Brio);
   `FACE_CAM=/dev/videoN` or `setup/10_face_cam.sh` (`/dev/face_cam`) override it.
+- **Orientation:** its mount holds it upside-down, so frames are turned by `rotate:` in
+  `config/face_cam.yaml` (180) before anything sees them. The detector can't find a face that is
+  sideways or upside-down, so after remounting, re-measure and update it.
+- **Dashboard:** EYES → ☺ FACE / BOTH shows this camera live with a box per face, green with the
+  name when recognised, amber "not recognised" otherwise (admin only; `/face_frame.jpg`).
 
 ## Live service — identify + verify during delivery (added 2026-10-22)
 

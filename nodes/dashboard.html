@@ -39,6 +39,9 @@ h1 .blink{animation:bl 1.2s steps(2) infinite}@keyframes bl{to{opacity:0}}
 #camwrap{flex:none;aspect-ratio:16/9;max-height:46%;display:flex;align-items:center;justify-content:center;
   background:#000;border:1px solid var(--line)}
 #cam{max-width:100%;max-height:100%}
+#camwrap{position:relative}
+#facepip{position:absolute;right:6px;bottom:6px;width:34%;border:2px solid var(--fg);border-radius:4px;
+  display:none;cursor:pointer;background:#000;box-shadow:0 0 8px #000}
 #camoff{color:var(--dim)}
 .row{flex:none;display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:6px}
 button{background:#0f1d0f;border:1px solid var(--fg);color:var(--fg);font:inherit;font-size:12px;
@@ -154,10 +157,15 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
  </div>
  <div class="panel">
   <h2>EYES — live feed</h2>
-  <div id="camwrap"><img id="cam" alt=""><span id="camoff">feed off</span></div>
+  <div id="camwrap"><img id="cam" alt=""><img id="facepip" alt="" title="face camera — click to enlarge"
+    onclick="setSrc('face')"><span id="camoff">feed off</span></div>
   <div class="row">
    <button onclick="feed(true)">▶ FEED</button>
    <button onclick="feed(false)">▢ OFF</button>
+   <button class="tab" id="srcmast" onclick="setSrc('mast')" title="mast camera (Brio): AprilTags + what the robot sees">MAST</button>
+   <button class="tab" id="srcface" onclick="setSrc('face')" title="face camera (HIKVISION) with live name boxes">☺ FACE</button>
+   <button class="tab" id="srcboth" onclick="setSrc('both')" title="mast camera, face camera in the corner">BOTH</button>
+   <small id="facenote"></small>
   </div>
   <div class="row" style="margin-top:8px">
    <span style="color:var(--dim);font-size:11px;letter-spacing:2px">LOG:</span>
@@ -546,9 +554,23 @@ function renderQueue(s){
    r.appendChild(mk('span',`📍 ${(s.places||[]).indexOf(p)+1} · ${p.name}  (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`));
    const b=mk('button','✕ DELETE');b.onclick=()=>pDelete(p.id,p.name);r.appendChild(b);box.appendChild(r)})}}
 function feed(on){feedOn=on;document.getElementById('camoff').style.display=on?'none':'';
- if(!on)document.getElementById('cam').src=''}
+ if(!on){document.getElementById('cam').src='';document.getElementById('facepip').style.display='none'}}
+// EYES source: the mast Brio, the face HIKVISION (boxed + named by the face service), or both (PiP)
+let camSrc=(()=>{try{return localStorage.getItem('camSrc')||'both'}catch(e){return 'both'}})();
+function setSrc(s){camSrc=s;try{localStorage.setItem('camSrc',s)}catch(e){}
+ ['mast','face','both'].forEach(k=>document.getElementById('src'+k).classList.toggle('on',k==s));
+ document.getElementById('facepip').style.display='none';document.getElementById('facenote').textContent=''}
+async function pollFace(){
+ const want=feedOn&&view!='manual'&&camSrc!='mast'&&!document.hidden;
+ if(want){const pip=camSrc=='both',el=document.getElementById(pip?'facepip':'cam');
+  try{const r=await fetch('/face_frame.jpg?'+Date.now());
+   if(r.ok){const u=URL.createObjectURL(await r.blob());el.onload=()=>URL.revokeObjectURL(u);el.src=u;
+    if(pip)el.style.display='';document.getElementById('facenote').textContent=''}
+   else{document.getElementById('facenote').textContent='face cam: '+(await r.text()).slice(0,60);
+    if(pip)el.style.display='none'}}catch(e){}}
+ setTimeout(pollFace,want?150:1000)}
 async function pollCam(){
- if(feedOn){const c=document.getElementById(view=='manual'?'cam2':'cam');
+ if(feedOn&&!(camSrc=='face'&&view!='manual')){const c=document.getElementById(view=='manual'?'cam2':'cam');
   try{const r=await fetch('/frame.jpg?'+Date.now());
    if(r.ok){const b=await r.blob();const u=URL.createObjectURL(b);
     c.onload=()=>URL.revokeObjectURL(u);c.src=u;document.getElementById('camoff').style.display='none'}
@@ -643,5 +665,5 @@ setInterval(async()=>{try{
   im.src='/map.png?'+Date.now()}
  draw();
 }catch(e){document.getElementById('nav').textContent='PANEL OFFLINE?'}},700);
-pollCam();
+pollCam();setSrc(camSrc);pollFace();
 </script></body></html>

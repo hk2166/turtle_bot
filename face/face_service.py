@@ -43,7 +43,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import verify as verify_mod  # noqa: E402
 import identify as identify_mod  # noqa: E402
-from engine import Engine  # noqa: E402
+from engine import Engine, best_score  # noqa: E402
 from face_store import FaceStore  # noqa: E402
 import enroll_session  # noqa: E402
 
@@ -106,6 +106,7 @@ class Cam:
     check so the camera and the (single-threaded) model are used by one request at a time."""
     def __init__(self, device, w, h, idle):
         self.device, self.w, self.h, self.idle = device, w, h, idle
+        self.rotate = verify_mod.cam_rotation()     # the mount holds it upside-down (config/face_cam.yaml)
         self.cap = None
         self.last = 0.0
         self.lock = threading.Lock()
@@ -141,7 +142,7 @@ class Cam:
                 self._release()
                 raise RuntimeError('camera read failed (device dropped?)')
             self.last = time.time()
-            yield fr
+            yield verify_mod.upright(fr, self.rotate)
 
     def _release(self):
         if self.cap is not None:
@@ -187,7 +188,8 @@ class Service:
             n, store_ok, store_err = 0, False, str(e)
         return {'ok': self.ready() and store_ok, 'model_loaded': self.ready(),
                 'model_error': self.model_error, 'det_size': DET_SIZE,
-                'camera': {'device': str(self.cam.device), 'available': self.cam.available()},
+                'camera': {'device': str(self.cam.device), 'available': self.cam.available(),
+                           'rotate': self.cam.rotate},
                 'enrolled': n, 'store_ok': store_ok, 'store_error': store_err}
 
     def _run(self, fn, body, **extra):
@@ -215,6 +217,68 @@ class Service:
         except Exception as e:
             return 500, {'ok': False, 'reason': 'error', 'error': str(e)}
 
+    # ---------------------------------------------------------------- live preview for the dashboard
+    ANN_EVERY = 0.7       # s between recognitions on the preview (the model is shared with deliveries)
+    ANN_KEEP = 1.5        # s a box stays drawn after its recognition
+
+    def _roster_cached(self):
+        t, names, embs = getattr(self, '_roster_c', (0.0, [], []))
+        if time.time() - t > 10:
+            names, embs = identify_mod._roster(self.store)
+            self._roster_c = (time.time(), names, embs)
+        return names, embs
+
+    def preview(self, annotate=True, width=640):
+        """(jpeg bytes, None) of the face camera now, boxed and named when annotate; (None, why) if not."""
+        if not self.cam.available():
+            return None, 'no face camera connected'
+        if not self.cam.lock.acquire(timeout=1.5):        # a delivery check is using the camera
+            return None, 'face camera busy'
+        try:
+            frame = next(self.cam.frames())
+        except RuntimeError as e:
+            return None, str(e)
+        finally:
+            self.cam.lock.release()
+        now = time.time()
+        ann = getattr(self, '_ann', {'t': 0.0, 'bbox': None})
+        if annotate and self.ready() and now - ann['t'] > self.ANN_EVERY and self.infer.acquire(blocking=False):
+            try:
+                a = self.engine.analyze(frame, embed=True)
+            finally:
+                self.infer.release()
+            label, known = '', False
+            if a['emb'] is not None:
+                names, embs = self._roster_cached()
+                if names:
+                    scores = [best_score(a['emb'], e) for e in embs]
+                    i = int(np.argmax(scores))
+                    second = sorted(scores)[-2] if len(scores) > 1 else -1.0
+                    if scores[i] >= identify_mod.THRESHOLD and scores[i] - second >= identify_mod.MARGIN:
+                        label, known = f'{names[i]}  {scores[i]:.2f}', True
+                    else:
+                        label = f'not recognised  {scores[i]:.2f}'
+                else:
+                    label = 'nobody enrolled'
+            elif a['bbox'] is not None:
+                label = 'face unclear'
+            ann = self._ann = {'t': now, 'bbox': a['bbox'], 'label': label, 'known': known}
+        if annotate and ann.get('bbox') is not None and now - ann['t'] < self.ANN_KEEP:
+            x1, y1, x2, y2 = (int(v) for v in ann['bbox'])
+            col = (80, 200, 60) if ann['known'] else (0, 170, 255)          # BGR: green / amber
+            cv2.rectangle(frame, (x1, y1), (x2, y2), col, 3)
+            if ann['label']:
+                (tw, th), _ = cv2.getTextSize(ann['label'], cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
+                ty = max(th + 12, y1)
+                cv2.rectangle(frame, (x1, ty - th - 12), (x1 + tw + 12, ty), col, -1)
+                cv2.putText(frame, ann['label'], (x1 + 6, ty - 7), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+                            (0, 0, 0), 2, cv2.LINE_AA)
+        h, w = frame.shape[:2]
+        if w > width:
+            frame = cv2.resize(frame, (width, int(h * width / w)), interpolation=cv2.INTER_AREA)
+        ok, jpg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        return (jpg.tobytes(), None) if ok else (None, 'encode failed')
+
     def verify(self, body):
         pid = str(body.get('person_id', '')).strip().lower()
         if not pid:
@@ -238,7 +302,23 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):
-        if self.path == '/health':
+        if self.path.startswith('/frame.jpg'):           # live face-camera preview (dashboard, admin)
+            jpg, why = self.svc.preview(annotate='ann=0' not in self.path)
+            if jpg is None:
+                payload = why.encode()
+                self.send_response(503)
+                self.send_header('Content-Type', 'text/plain')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('Content-Length', str(len(jpg)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(jpg)
+        elif self.path == '/health':
             self._send(200, self.svc.health())
         elif self.path == '/people':
             try:

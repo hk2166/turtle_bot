@@ -20,8 +20,9 @@ case "${1:-on}" in
     # the service finds the HIKVISION itself (any USB camera that isn't the Brio); /dev/face_cam is optional
     [[ -e /dev/face_cam ]] || ls /sys/class/video4linux/ >/dev/null 2>&1 || warn "no camera found: the service starts without one"
     start_bg face "$VENV_PY" "$PROJECT_DIR/face/face_service.py"
-    for _ in $(seq 20); do
-      curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break; sleep 0.25
+    # up to 60 s: at boot the Pi is busy starting nav too, and 5 s wasn't enough (2026-10-26)
+    for _ in $(seq 120); do
+      curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break; sleep 0.5
     done
     if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
       h="$(curl -fsS "http://127.0.0.1:$PORT/health" 2>/dev/null)"

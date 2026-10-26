@@ -14,6 +14,16 @@ set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$PROJECT_DIR" || exit 1
 
+# Wait for the clock. The Pi has no RTC battery: it boots with the time it was last shut down and
+# NTP jumps it forward later. A jump while ROS starts breaks TF and the lifecycle bonds (2026-10-26:
+# the clock jumped ~3.7 h, AMCL stayed unconfigured, and pid files looked stale -> a 2nd dashboard).
+# Give NTP up to 90 s; offline (no internet on the WiFi) we carry on with the clock we have.
+for _ in $(seq 90); do
+  [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" == yes ]] && break; sleep 1
+done
+[[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" == yes ]] \
+  && ok "clock synced ($(date '+%F %T'))" || warn "clock not NTP-synced after 90 s: starting anyway"
+
 # USB serial devices can enumerate after the user manager starts
 for dev in /dev/lidar /dev/esp32; do
   for _ in $(seq 60); do [[ -e "$dev" ]] && break; sleep 1; done

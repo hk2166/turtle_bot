@@ -617,6 +617,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if route == '/admin':
             self.send(200, 'text/html; charset=utf-8', PAGE)
+        elif route == '/face_frame.jpg':        # the HIKVISION, boxed + named by the face service (admin only)
+            jpg, why = face_client.frame(annotate='ann=0' not in self.path)
+            if jpg is None:
+                self.send(503, 'text/plain', why.encode())
+            else:
+                self.send(200, 'image/jpeg', jpg)
         elif self.path.startswith('/map.png'):
             if pid_alive('slam') and self.ros.grid is not None:
                 png, _, _ = render_grid(self.ros.grid)

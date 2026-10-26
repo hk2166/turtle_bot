@@ -29,12 +29,21 @@ ok()   { printf '    \033[32m✓\033[0m %s\n' "$*"; }
 warn() { printf '    \033[33m! %s\033[0m\n' "$*"; }
 err()  { printf '    \033[31m✗ %s\033[0m\n' "$*" >&2; }
 
+BOOT_ID_FILE=/proc/sys/kernel/random/boot_id
+
 is_running() {  # is_running NAME
-  local pid f="$RUN_DIR/$1.pid" boot
+  local pid f="$RUN_DIR/$1.pid" b="$RUN_DIR/$1.boot" boot
   pid="$(cat "$f" 2>/dev/null)" || return 1
-  # a pid file from before the last reboot is stale even if some other process now has that PID
-  boot=$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) ))
-  (( $(stat -c %Y "$f") >= boot )) || return 1
+  # a pid file from before the last reboot is stale even if some other process now has that PID.
+  # Compare the kernel boot id, not times: the Pi has no battery clock, so its wall clock JUMPS at boot
+  # when NTP syncs, and files written just before the jump looked "older than the boot" — which made
+  # remap.sh start a second dashboard and face.sh think the face service was missing (2026-10-26).
+  if [[ -f "$b" ]]; then
+    [[ "$(cat "$b" 2>/dev/null)" == "$(cat "$BOOT_ID_FILE")" ]] || return 1
+  else                                            # older pid file without a boot id
+    boot=$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) ))
+    (( $(stat -c %Y "$f") >= boot )) || return 1
+  fi
   [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
 }
 
@@ -43,6 +52,7 @@ start_bg() {  # start_bg NAME CMD...   (log: $LOG_DIR/NAME.log)
   if is_running "$name"; then info "$name already running"; return 0; fi
   printf '\n===== %s  %s\n' "$(date '+%F %T')" "$*" >>"$LOG_DIR/$name.log"
   rm -f "$RUN_DIR/$name.pid"
+  cat "$BOOT_ID_FILE" >"$RUN_DIR/$name.boot"     # which boot this pid belongs to (see is_running)
   # setsid may fork (then $! is the wrong PID), so the child records its own PID, which is also
   # its process-group ID, before exec'ing the command.
   setsid bash -c 'echo $$ >"$0"; exec "$@"' "$RUN_DIR/$name.pid" "$@" >>"$LOG_DIR/$name.log" 2>&1 < /dev/null &
