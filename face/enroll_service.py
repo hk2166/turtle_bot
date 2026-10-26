@@ -128,7 +128,7 @@ def enroll(person_id: str = Form(...), consent: bool = Form(False), files: List[
         raise HTTPException(status_code=422, detail={
             'message': f'only {len(embs)} usable faces (need {MIN_GOOD}); try better light, face the camera',
             'good': len(embs), 'received': len(files), 'rejected': rejected})
-    n = store.enroll(pid, embs, consent=True)
+    n = store.enroll(pid, embs, consent=True, source='phone page via ngrok (enroll_service.py)')
     return {'person_id': pid, 'stored_embeddings': n, 'received': len(files), 'rejected': rejected}
 
 

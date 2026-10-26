@@ -114,7 +114,7 @@ def main():
             print(f'NOT enrolled: need {MIN_GOOD} usable faces. Better light on the face, face the camera, '
                   'stand closer.', flush=True)
             return 1
-        n = FaceStore().enroll(pid, embs, consent=True)
+        n = FaceStore().enroll(pid, embs, consent=True, source='robot face camera (enroll_local.py)')
         print(f'ENROLLED {pid}: {n} embeddings stored (encrypted). No images kept.', flush=True)
         return 0
     finally:

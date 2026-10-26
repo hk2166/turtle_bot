@@ -9,7 +9,7 @@ card gives back both `faces.enc` and `faces.key`.
 
 | file | what |
 |---|---|
-| `face_store.py` | Fernet-encrypted embedding store, `~/.campus_bot/faces.enc` + `faces.key` |
+| `face_store.py` | encrypted embedding store, **one folder per person** in `~/.campus_bot/faces/<id>/` (`info.json` plain, `face.enc` encrypted) + `~/.campus_bot/faces.key` |
 | `engine.py` | InsightFace wrapper: `embed(frame) -> (embedding, bbox, det_score, ms)` |
 | `verify.py` | best-of-N 1:1 verification, CLI and `verify(person_id, frames)` |
 | `enroll_service.py` | FastAPI phone enrolment page + `/enroll`, `/people`, `DELETE /people/{id}` |
@@ -125,5 +125,14 @@ Rows go to `~/.campus_bot/calib/scores.csv`. It holds scores only, no images.
   are stored, encrypted.
 - Enrolment is opt-in (explicit checkbox, checked again server-side). Anyone can remove themselves
   from the page, or via `DELETE /people/{id}` or `face_store.py --delete`.
-- **Never commit `~/.campus_bot/`** (`faces.enc`, `faces.key`, calibration CSVs) or any ngrok token.
-  Losing `faces.key` means everyone re-enrols. Back it up somewhere other than git.
+- **Who is registered:** `ls ~/.campus_bot/faces` (one folder per person), or
+  `~/.venvs/face/bin/python face/face_store.py` (with dates, template counts and where they enrolled).
+  Each folder: `info.json` (id, date, count, consent, source — no biometrics) and `face.enc` (the
+  templates, encrypted with `faces.key`). A folder is swapped in with one rename, so a crash mid-enrolment
+  never leaves half a person. The pre-2026-10-26 single `faces.enc` was migrated automatically and kept as
+  `faces.enc.migrated`.
+- **Never commit `~/.campus_bot/`** (`faces/`, `faces.key`, calibration CSVs, `tls/`) or any ngrok token.
+  Losing `faces.key` means everyone re-enrols. Back up `faces/` + `faces.key` together, somewhere other
+  than git.
+- **CPU:** the model runs on 2 threads (`FACE_THREADS`; measured fastest and half the CPU of 4). A
+  dashboard tab showing the face feed costs ~35% of one core (name box every 1.5 s); viewers share frames.

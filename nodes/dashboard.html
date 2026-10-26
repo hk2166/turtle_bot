@@ -40,6 +40,10 @@ h1 .blink{animation:bl 1.2s steps(2) infinite}@keyframes bl{to{opacity:0}}
   background:#000;border:1px solid var(--line)}
 #cam{max-width:100%;max-height:100%}
 #camwrap{position:relative}
+#qfacewrap{flex:none;aspect-ratio:16/9;max-height:42%;display:flex;align-items:center;justify-content:center;
+  background:#000;border:1px solid var(--line);margin-bottom:4px}
+#qface{max-width:100%;max-height:100%}
+#qfaceoff{color:var(--dim)}
 #facepip{position:absolute;right:6px;bottom:6px;width:34%;border:2px solid var(--fg);border-radius:4px;
   display:none;cursor:pointer;background:#000;box-shadow:0 0 8px #000}
 #camoff{color:var(--dim)}
@@ -215,8 +219,10 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
   <div id="qlist" style="margin-top:8px"></div>
  </div>
  <div class="panel">
-  <h2>PLACES ON THIS MAP — pin them on MISSION CONTROL (📍 buttons under the map)</h2>
-  <div id="plist"></div>
+  <h2>FACE CAM — who's at the crate <small id="qfacenote" style="letter-spacing:0"></small></h2>
+  <div id="qfacewrap"><img id="qface" alt=""><span id="qfaceoff">connecting…</span></div>
+  <h2 style="margin-top:10px">PLACES ON THIS MAP — pin them on MISSION CONTROL (📍 buttons under the map)</h2>
+  <div id="plist" style="flex:1;min-height:0;overflow-y:auto"></div>
  </div>
 </div>
 <script>
@@ -556,21 +562,26 @@ function renderQueue(s){
 function feed(on){feedOn=on;document.getElementById('camoff').style.display=on?'none':'';
  if(!on){document.getElementById('cam').src='';document.getElementById('facepip').style.display='none'}}
 // EYES source: the mast Brio, the face HIKVISION (boxed + named by the face service), or both (PiP)
-let camSrc=(()=>{try{return localStorage.getItem('camSrc')||'both'}catch(e){return 'both'}})();
+// default MAST: the face view runs the face model (~a quarter of a core per open tab), so it's opt-in here;
+// QUEUE & PLACES always shows it
+let camSrc=(()=>{try{return localStorage.getItem('camSrc')||'mast'}catch(e){return 'mast'}})();
 function setSrc(s){camSrc=s;try{localStorage.setItem('camSrc',s)}catch(e){}
  ['mast','face','both'].forEach(k=>document.getElementById('src'+k).classList.toggle('on',k==s));
  document.getElementById('facepip').style.display='none';document.getElementById('facenote').textContent=''}
 async function pollFace(){
- const want=feedOn&&view!='manual'&&camSrc!='mast'&&!document.hidden;
- if(want){const pip=camSrc=='both',el=document.getElementById(pip?'facepip':'cam');
+ // only while it's on screen: QUEUE & PLACES always shows it, MISSION CONTROL unless EYES = MAST
+ const q=view=='queue', want=!document.hidden&&(q||(feedOn&&view=='mission'&&camSrc!='mast'));
+ if(want){const pip=!q&&camSrc=='both',el=document.getElementById(q?'qface':pip?'facepip':'cam'),
+   note=document.getElementById(q?'qfacenote':'facenote');
   try{const r=await fetch('/face_frame.jpg?'+Date.now());
    if(r.ok){const u=URL.createObjectURL(await r.blob());el.onload=()=>URL.revokeObjectURL(u);el.src=u;
-    if(pip)el.style.display='';document.getElementById('facenote').textContent=''}
-   else{document.getElementById('facenote').textContent='face cam: '+(await r.text()).slice(0,60);
-    if(pip)el.style.display='none'}}catch(e){}}
+    if(pip)el.style.display='';note.textContent='';if(q)document.getElementById('qfaceoff').style.display='none'}
+   else{const t=(await r.text()).slice(0,60);note.textContent=q?'· '+t:'face cam: '+t;
+    if(pip)el.style.display='none';if(q){el.removeAttribute('src');const o=document.getElementById('qfaceoff');
+     o.style.display='';o.textContent=t}}}catch(e){}}
  setTimeout(pollFace,want?150:1000)}
 async function pollCam(){
- if(feedOn&&!(camSrc=='face'&&view!='manual')){const c=document.getElementById(view=='manual'?'cam2':'cam');
+ if(feedOn&&view!='queue'&&!(camSrc=='face'&&view!='manual')){const c=document.getElementById(view=='manual'?'cam2':'cam');
   try{const r=await fetch('/frame.jpg?'+Date.now());
    if(r.ok){const b=await r.blob();const u=URL.createObjectURL(b);
     c.onload=()=>URL.revokeObjectURL(u);c.src=u;document.getElementById('camoff').style.display='none'}

@@ -218,8 +218,10 @@ class Service:
             return 500, {'ok': False, 'reason': 'error', 'error': str(e)}
 
     # ---------------------------------------------------------------- live preview for the dashboard
-    ANN_EVERY = 0.7       # s between recognitions on the preview (the model is shared with deliveries)
-    ANN_KEEP = 1.5        # s a box stays drawn after its recognition
+    # s between recognitions on the preview. Each costs ~350 ms of CPU (2 threads), so 1.5 s keeps one
+    # viewer near a quarter of a core; at 0.7 s with 4 threads it was ~90% (measured 2026-10-26).
+    ANN_EVERY = 1.5
+    ANN_KEEP = 2.5        # s a box stays drawn after its recognition
 
     def _roster_cached(self):
         t, names, embs = getattr(self, '_roster_c', (0.0, [], []))
@@ -228,8 +230,22 @@ class Service:
             self._roster_c = (time.time(), names, embs)
         return names, embs
 
+    PREVIEW_SHARE = 0.12  # s: every viewer polling within this window gets the same JPEG (CPU stays flat)
+
     def preview(self, annotate=True, width=640):
-        """(jpeg bytes, None) of the face camera now, boxed and named when annotate; (None, why) if not."""
+        """(jpeg bytes, None) of the face camera now, boxed and named when annotate; (None, why) if not.
+        Shared: several dashboard tabs polling at once cost one capture + encode, not one each."""
+        cache = getattr(self, '_pv', {})
+        hit = cache.get(annotate)
+        if hit and time.time() - hit[0] < self.PREVIEW_SHARE:
+            return hit[1], None
+        jpg, why = self._preview(annotate, width)
+        if jpg is not None:
+            cache[annotate] = (time.time(), jpg)
+            self._pv = cache
+        return jpg, why
+
+    def _preview(self, annotate, width):
         if not self.cam.available():
             return None, 'no face camera connected'
         if not self.cam.lock.acquire(timeout=1.5):        # a delivery check is using the camera

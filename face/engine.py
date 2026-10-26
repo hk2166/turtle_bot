@@ -22,14 +22,21 @@ warnings.filterwarnings('ignore', category=FutureWarning, module='insightface')
 
 
 class Engine:
-    def __init__(self, det_size=640, det_thresh=0.5):
+    def __init__(self, det_size=640, det_thresh=0.5, threads=None):
         if det_size not in DET_SIZES:
             raise ValueError(f'det_size must be one of {DET_SIZES}')
+        import onnxruntime as ort
         from insightface.app import FaceAnalysis   # slow import; keep `--help` fast
         self.det_size = det_size
+        # onnxruntime defaults to one thread per core. Measured on the Pi 5 (2026-10-26, detect+recognise
+        # on a 720p frame): 4 threads 311 ms wall / 789 ms CPU, 2 threads 183 ms / 351 ms, 1 thread
+        # 320 ms / 220 ms. 2 is both the fastest and half the CPU, and leaves cores for nav.
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = int(threads or os.environ.get('FACE_THREADS', '2'))
+        so.inter_op_num_threads = 1
         self.app = FaceAnalysis(name=MODEL, root=os.path.expanduser('~/.insightface'),
                                 allowed_modules=['detection', 'recognition'],
-                                providers=['CPUExecutionProvider'])
+                                providers=['CPUExecutionProvider'], sess_options=so)
         self.app.prepare(ctx_id=-1, det_thresh=det_thresh, det_size=(det_size, det_size))
 
     def embed(self, frame_bgr):

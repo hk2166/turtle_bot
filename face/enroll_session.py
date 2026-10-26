@@ -169,7 +169,7 @@ class Session:
             return self._end('failed', f'The ID "{self.pid}" is already enrolled to a different face. '
                                        'Pick another ID, or ask the robot admin to remove the old one.')
         embs = list(self.center) + [e for sec in self.sectors for _d, e in sec]
-        n = self.store.enroll(self.pid, embs, consent=True)
+        n = self.store.enroll(self.pid, embs, consent=True, source='self-service page (own phone/laptop)')
         angles = sum(1 for sec in self.sectors if sec)
         self._end('done', f'{"Updated" if s is not None else "Enrolled"} {self.pid}: {n} templates from '
                           f'{angles}/{N_SECTORS} angles. No photos were kept.')
