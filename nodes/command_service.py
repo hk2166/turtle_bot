@@ -201,7 +201,8 @@ def parse(text, places, requester=None):
 # 2026-10-29: the camera now sits IN THE MIDDLE of the robot, low, looking forward over its own deck
 # (it used to be described as a 1.25 m mast). The robot's own parts in view double as a ruler.
 ROBOT = """You are the eyes of an indoor office delivery robot. The image comes from a forward-facing camera
-mounted in the MIDDLE of the robot, low (roughly 25-40 cm above the floor), looking ahead and slightly down.
+mounted near the MIDDLE of the robot: lens 39 cm above the floor, 7.5 cm behind the lidar (so about 30 cm
+behind the robot's front edge), looking ahead and slightly down.
 
 Parts of the robot itself are in the picture. They are never obstacles:
 - the black glossy surface across the bottom of the image is the robot's own top deck; its far edge is the
