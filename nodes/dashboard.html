@@ -711,7 +711,8 @@ function renderReady(s){
  else if(v.last_hazard)add('warn','Vision','⚠ '+v.last_hazard.text.slice(0,28),
    `hazard ahead: ${v.last_hazard.text}`+(v.slowed?` — slowed to ${v.last_hazard.pct}%`:''));
  else add('ok','Vision',`${v.hazard_on?'spotter on':'spotter off'} · ${v.calls_today||0} looks · ~$${(v.cost_today||0).toFixed(2)}`,
-   `hazard spotter ${v.hazard_on?'ON':'OFF'} · today ${v.calls_today||0}/${v.cap} looks · ~$${(v.cost_today||0).toFixed(2)} (Claude, estimate)`);
+   `hazard spotter ${v.hazard_on?'ON':'OFF'} · today ${v.calls_today||0}/${v.cap} looks · ~$${(v.cost_today||0).toFixed(2)} (Claude, estimate)`+
+   (v.room?` · legroom: ${v.room.clear_ahead_m!=null?v.room.clear_ahead_m.toFixed(1)+' m clear ahead':''}${v.room.path_width_m!=null?', path '+v.room.path_width_m.toFixed(2)+' m wide':''}`:''));
  const f=s.face||{};
  if(f.ok&&f.available)add('ok','Face',(f.enrolled||0)+' enrolled','face service up, 2nd camera ready');
  else if(f.ok)add('warn','Face','no cam','face service up but no /dev/face_cam (deliveries still work)');

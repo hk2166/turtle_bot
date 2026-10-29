@@ -198,12 +198,30 @@ def parse(text, places, requester=None):
 # Claude looks at one camera frame and answers in structured JSON. It takes seconds, so it only informs
 # SLOW decisions (how long to wait when blocked, slowing down for something the lidar can't see, telling
 # people what it found). Steering and collision safety stay with the lidar, bumper and watchdog.
-ROBOT = """You are the eyes of an indoor office delivery robot. The image is from its forward-facing camera on
-a mast about 1.25 m up, tilted down toward the floor ahead. The robot: a 40 x 30 cm base, an open crate on a
-platform about 50 cm high, the mast up to about 1.3 m; top speed about 0.8 m/s. It senses obstacles with a
-2D lidar that scans ONE horizontal plane 21.5 cm above the floor, so the lidar can MISS: objects lower than
-about 20 cm (bags, cables, shoes, low boxes, cups), things above that plane that stick out (table tops, open
-drawers, shelf edges, chair arms between 0.25 and 1.3 m), glass and mirrors, and spills."""
+# 2026-10-29: the camera now sits IN THE MIDDLE of the robot, low, looking forward over its own deck
+# (it used to be described as a 1.25 m mast). The robot's own parts in view double as a ruler.
+ROBOT = """You are the eyes of an indoor office delivery robot. The image comes from a forward-facing camera
+mounted in the MIDDLE of the robot, low (roughly 25-40 cm above the floor), looking ahead and slightly down.
+
+Parts of the robot itself are in the picture. They are never obstacles:
+- the black glossy surface across the bottom of the image is the robot's own top deck; its far edge is the
+  front of the robot;
+- grey vertical aluminium bars at the left and right edges are the robot's own corner columns (its sides);
+- anything lying on that black deck (labels, a blue box, cables on the deck) is on the robot.
+Use them as a ruler: the robot is 44 cm long and 38 cm wide (the two columns are its width), with an open
+crate on a platform about 50 cm high (crate top roughly 0.8 m). To pass between things it needs a gap of
+about 50 cm. Top speed about 0.8 m/s.
+
+It senses obstacles with a 2D lidar that scans ONE horizontal plane 21.5 cm above the floor, so the lidar
+can MISS: objects lower than about 20 cm (bags, cables, shoes, chair bases and casters, low boxes, cups),
+things above that plane that stick out (table tops, open drawers, shelf edges, chair seats and arms between
+0.25 and 0.8 m), glass and mirrors, and spills.
+
+Legroom (always estimate, in metres, from the robot's front edge): clear_ahead_m = free floor straight
+ahead before anything the robot would touch, including things the lidar misses (use 5 if open for 5 m+);
+path_width_m = the narrowest width of free floor along the next ~1.5 m of its path."""
+
+ROOM = {'clear_ahead_m': {'type': 'number'}, 'path_width_m': {'type': 'number'}}
 
 VISION = {
     'hazard': {
@@ -223,8 +241,8 @@ and hazards is empty. Be conservative: a false alarm only slows the robot briefl
                 'distance': {'type': 'string', 'enum': ['under_1m', '1_to_3m', 'over_3m']},
                 'severity': {'type': 'string', 'enum': ['low', 'medium', 'high']}},
                 'required': ['what', 'kind', 'where', 'distance', 'severity'], 'additionalProperties': False}},
-            'summary': {'type': 'string'}},
-            'required': ['path_clear', 'hazards', 'summary'], 'additionalProperties': False},
+            'summary': {'type': 'string'}, **ROOM},
+            'required': ['path_clear', 'hazards', 'summary', *ROOM], 'additionalProperties': False},
     },
     'blocked': {
         'prompt': ROBOT + """
@@ -240,8 +258,9 @@ the corridor near the meeting room; could someone move it?".""",
             'will_clear_soon': {'type': 'boolean'},
             'advice': {'type': 'string', 'enum': ['wait_short', 'wait_long', 'give_up']},
             'what': {'type': 'string'},
-            'message': {'type': 'string'}},
-            'required': ['cause', 'will_clear_soon', 'advice', 'what', 'message'], 'additionalProperties': False},
+            'message': {'type': 'string'}, **ROOM},
+            'required': ['cause', 'will_clear_soon', 'advice', 'what', 'message', *ROOM],
+            'additionalProperties': False},
     },
     'describe': {
         'prompt': ROBOT + """
@@ -251,8 +270,8 @@ seems to be, any people, and anything in its way, mentioning anything the lidar 
         'schema': {'type': 'object', 'properties': {
             'description': {'type': 'string'},
             'people': {'type': 'integer'},
-            'in_the_way': {'type': 'string'}},
-            'required': ['description', 'people', 'in_the_way'], 'additionalProperties': False},
+            'in_the_way': {'type': 'string'}, **ROOM},
+            'required': ['description', 'people', 'in_the_way', *ROOM], 'additionalProperties': False},
     },
     'arrival': {
         'prompt': ROBOT + """

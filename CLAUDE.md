@@ -54,8 +54,13 @@ beats a reconstruction.
   RXD, Green (lidar RX) → TXD. The scan plane is at ~215 mm, and 4 column slivers are masked.
 - **Sensors:**
   - MPU6050 IMU on the ESP32, used as the heading source.
-  - Logitech Brio 100 on a mast at ~1.25 m, meant to tilt up ~10° (seen ~25° down on 2026-10-01), with a
-    12 V warm-white LED strip as fill light. Measure it with `tools/camera_pose.py`.
+  - Logitech Brio 100: since 2026-10-29 mounted low in the MIDDLE of the robot, looking forward over the
+    robot's own black top deck (bottom of the frame) between the front columns (frame edges); the vision
+    prompt in `nodes/command_service.py` uses those as a ruler. Earlier notes said "mast at ~1.25 m".
+    **Re-measure `CAMERA_*` in `config/robot.env` (`tools/camera_pose.py`) after any move** — AprilTag
+    localization depends on it. 12 V warm-white LED strip as fill light.
+  - HIKVISION DS-U02 face camera (2nd USB camera, found automatically), mounted upside-down:
+    `config/face_cam.yaml` rotate 180.
   - 5 kg bar load cell + HX711 under a floating crate floor: a weight drop means the parcel was delivered.
   - 6× Omron V-156 microswitches on the front-only bumper, wired NC in series (open circuit = stop).
 - **Structure:** 400×300×12 mm ply base; all electricals on deck 1 (≤ ~120 mm tall) under an acrylic

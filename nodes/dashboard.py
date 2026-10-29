@@ -334,6 +334,10 @@ HAZARD_SLOW_PCT = float(os.environ.get('HAZARD_SLOW_PCT', '40'))      # % of max
 HAZARD_SLOW_S = float(os.environ.get('HAZARD_SLOW_S', '8'))           # s it stays slow after a sighting
 HAZARD_OFF_FILE = os.path.expanduser('~/.campus_bot/run/hazard_off')  # exists = spotter switched off
 PRICE_IN, PRICE_OUT = 4e-6, 20e-6        # Claude Opus 5.5 $ per token, for the dashboard's cost estimate
+# Legroom (camera, judged against the robot's own 38 cm-wide frame in view): while driving, slow down too
+# when the camera sees less than this much room, even with no named hazard (footprint 0.44 x 0.38 m).
+ROOM_MIN_AHEAD = float(os.environ.get('ROOM_MIN_AHEAD', '0.7'))
+ROOM_MIN_WIDTH = float(os.environ.get('ROOM_MIN_WIDTH', '0.5'))
 
 
 class Vision:
@@ -393,13 +397,29 @@ class Vision:
         u = r.get('usage') or {}
         with self.lock:
             self.cost += u.get('in', 0) * PRICE_IN + u.get('out', 0) * PRICE_OUT
+        if r.get('ok'):
+            self.note_room(r['result'])
         return (r['result'], None) if r.get('ok') else (None, r.get('error'))
 
+    def note_room(self, res):
+        """Keep the latest legroom estimate (clear ahead / path width, metres) from any vision answer."""
+        def num(k):
+            try:
+                v = float(res.get(k))
+                return v if 0 <= v <= 50 else None
+            except (TypeError, ValueError):
+                return None
+        room = {'clear_ahead_m': num('clear_ahead_m'), 'path_width_m': num('path_width_m'), 't': time.time()}
+        if room['clear_ahead_m'] is not None or room['path_width_m'] is not None:
+            self.last_room = room
+        return room
+
     def status(self):
-        lh = self.last_hazard
+        lh, lr = self.last_hazard, getattr(self, 'last_room', None)
         return {'hazard_on': self.hazard_on(), 'calls_today': self.calls, 'cap': VISION_DAILY_CAP,
                 'cost_today': round(self.cost, 2), 'slowed': self.limited,
-                'last_hazard': lh if lh and time.time() - lh['t'] < 120 else None}
+                'last_hazard': lh if lh and time.time() - lh['t'] < 120 else None,
+                'room': lr if lr and time.time() - lr['t'] < 120 else None}
 
     def _hazard_loop(self):
         last = 0.0
@@ -425,15 +445,21 @@ class Vision:
             res, _err = self.ask('hazard', {'state': 'driving autonomously to a goal'}, timeout=20)
             if not res or self.ros.nav_state != 'DRIVING':
                 return
+            room = self.note_room(res)
             hz = [h for h in res.get('hazards', [])
                   if h.get('severity') in ('medium', 'high') and h.get('distance') != 'over_3m']
-            if not hz:
+            tight = []
+            if room['clear_ahead_m'] is not None and room['clear_ahead_m'] < ROOM_MIN_AHEAD:
+                tight.append(f"only ~{room['clear_ahead_m']:.1f} m clear ahead")
+            if room['path_width_m'] is not None and room['path_width_m'] < ROOM_MIN_WIDTH:
+                tight.append(f"path ~{room['path_width_m']:.2f} m wide (needs ~0.5)")
+            if not hz and not tight:
                 return
             pct = 25.0 if any(h['severity'] == 'high' for h in hz) else HAZARD_SLOW_PCT
             self.ros.set_speed_limit(pct)
             self.limited, self.slow_until = True, time.time() + HAZARD_SLOW_S
-            text = '; '.join(f"{h['what']} ({h['distance'].replace('_', ' ')}, {h['where'].replace('_', ' ')})"
-                             for h in hz)
+            text = '; '.join([f"{h['what']} ({h['distance'].replace('_', ' ')}, {h['where'].replace('_', ' ')})"
+                              for h in hz] + tight)
             self.last_hazard = {'text': text, 't': time.time(), 'pct': pct}
             if time.time() - self.logged.get(text.lower(), 0) > 20:
                 self.logged[text.lower()] = time.time()
@@ -966,9 +992,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.json({'ok': False, 'error': why})
                 return
             res, err = self.vision.ask('describe', {'asked by': 'the operator' if self.is_admin() else 'someone'})
-            text = (f"{res['description']}" + (f" In the way: {res['in_the_way']}." if res.get('in_the_way')
-                                                and res['in_the_way'].lower() not in ('nothing', 'none') else '')
-                    ) if res else None
+            text = None
+            if res:
+                text = res['description']
+                if res.get('in_the_way') and res['in_the_way'].lower().strip('.') not in ('nothing', 'none'):
+                    text += f" In the way: {res['in_the_way']}"
+                try:
+                    text += (f" Legroom: about {float(res['clear_ahead_m']):.1f} m clear ahead, path about "
+                             f"{float(res['path_width_m']):.2f} m wide.")
+                except (KeyError, TypeError, ValueError):
+                    pass
             if text:
                 print(time.strftime('%H:%M:%S'), 'vision: sees:', text, flush=True)
             self.json({'ok': bool(res), 'text': text, 'error': err})
