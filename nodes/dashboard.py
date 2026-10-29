@@ -38,6 +38,11 @@ from tf2_ros import Buffer, TransformListener
 
 import fleet
 import face_client   # talks to the warm face service; returns ok:false (never raises) when it's off
+import command_client  # voice/typed commands -> trip plans (nodes/command_service.py, Claude)
+COMMAND_GAP = float(os.environ.get('COMMAND_GAP', '4'))
+COMMAND_DAILY_CAP = int(os.environ.get('COMMAND_DAILY_CAP', '300'))
+HTTPS_PORT = int(os.environ.get('DASH_HTTPS_PORT', '8444'))   # same pages over https: browsers only give
+                                                               # a page the microphone on a secure origin
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.expanduser('~/.campus_bot/logs')
@@ -281,6 +286,18 @@ def face_health():
                            'enrolled': h.get('enrolled', 0), 'model_loaded': bool(h.get('model_loaded'))}
         _face['t'] = now
     return _face['health']
+
+
+_cmdh = {'t': 0.0, 'h': {'ok': False}}
+
+
+def command_health():
+    """Cached (10 s): is the command service up, and does it have an API key?"""
+    if time.time() - _cmdh['t'] > 10:
+        h = command_client.health()
+        _cmdh['h'] = {'ok': bool(h.get('ok')), 'key': bool(h.get('key_configured')), 'model': h.get('model')}
+        _cmdh['t'] = time.time()
+    return _cmdh['h']
 
 
 def face_identify(where='check', job=None):
@@ -572,6 +589,25 @@ class Handler(BaseHTTPRequestHandler):
         # the robot itself (scripts, curl on the Pi) is trusted; everyone else needs a login
         return self.client_address[0] in ('127.0.0.1', '::1', '::ffff:127.0.0.1') or self.auth.valid(self.token())
 
+    # Each command is one Claude call (a cent or two): the call page is open to the whole office WiFi, so
+    # one command per device every COMMAND_GAP s and COMMAND_DAILY_CAP a day. The admin isn't limited.
+    _cmd = {'day': '', 'n': 0, 'last': {}}
+
+    def command_allowed(self, device, admin):
+        st, today = Handler._cmd, time.strftime('%F')
+        if st['day'] != today:
+            st.update(day=today, n=0, last={})
+        if not admin:
+            if not device:
+                return 'reload the page and try again'
+            if time.time() - st['last'].get(device, 0) < COMMAND_GAP:
+                return 'one command every few seconds, please'
+            if st['n'] >= COMMAND_DAILY_CAP:
+                return 'today\'s limit for voice commands is used up: call the robot to a place instead'
+            st['last'][device] = time.time()
+        st['n'] += 1
+        return None
+
     def proxy_stream(self, url):
         """Pass an MJPEG stream (the face service's) through to the browser until either side closes."""
         import urllib.request
@@ -645,7 +681,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if route == '/api/queue':
             dev = self.path.split('device=')[1].split('&')[0] if 'device=' in self.path else ''
-            self.json(self.queue.public_view(dev))
+            self.json({**self.queue.public_view(dev), 'commands': command_health().get('ok', False)})
             return
         if route == '/frame.jpg':
             self.frame()
@@ -702,7 +738,7 @@ class Handler(BaseHTTPRequestHandler):
                          'h': shape[0], 'w': shape[1]},
                  'places': fleet.load_places(AREA), 'queue': self.queue.admin_view(),
                  'cam_ok': self.ros.cam_jpg is not None and time.time() - self.ros.cam_t < 3.0,
-                 'face': face_health(), **s}
+                 'face': face_health(), 'commands': command_health(), **s}
             self.send(200, 'application/json', json.dumps(d).encode())
         elif self.path.startswith('/api/logs'):
             name = (self.path.split('f=')[1].split('&')[0] if 'f=' in self.path else 'nav')
@@ -752,6 +788,39 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == '/api/request/done':
             self.json({'ok': self.queue.done(body.get('id'), body.get('token'))})
+            return
+        # ---- voice / typed commands (call page and mission control). Claude only proposes a plan; the
+        # page shows it and nothing moves until a person taps CONFIRM (/api/command/run).
+        if self.path == '/api/command/parse':
+            admin = self.is_admin()
+            why = self.command_allowed(str(body.get('device') or ''), admin)
+            if why:
+                self.json({'ok': False, 'error': why})
+                return
+            places = [{'id': p['id'], 'name': p['name']} for p in fleet.load_places(AREA)]
+            r = command_client.parse(str(body.get('text') or '')[:500], places,
+                                     {'name': str(body.get('name') or '')[:40], 'place_id': body.get('place_id')})
+            print(time.strftime('%H:%M:%S'), 'command:', repr(str(body.get('text') or '')[:120]), '->',
+                  (r.get('plan') or {}).get('summary') or r.get('error') or (r.get('plan') or {}).get('question'),
+                  flush=True)
+            self.json(r)
+            return
+        if self.path == '/api/command/run':
+            plan = body.get('plan') or {}
+            admin = self.is_admin()
+            if not plan.get('understood'):
+                self.json({'ok': False, 'msg': 'nothing to run: say the command again'})
+                return
+            job, msg = self.queue.mission(body.get('name') or ('admin' if admin else ''), body.get('device'),
+                                          plan.get('legs'), item=plan.get('item'), summary=plan.get('summary'),
+                                          command=body.get('text'), admin=admin)
+            self.json({'ok': job is not None, 'msg': msg,
+                       **({'id': job['id'], 'token': job['token']} if job else {})})
+            return
+        if self.path == '/api/trip/confirm':          # LOADED / GOT IT at the current stop of a trip
+            ok, msg = self.queue.confirm(body.get('id'), token=body.get('token'), admin=self.is_admin(),
+                                         who=body.get('who'))
+            self.json({'ok': ok, 'msg': msg})
             return
         # ---- admin only
         if not self.is_admin():
@@ -1018,6 +1087,50 @@ class DualStackServer(ThreadingHTTPServer):
         super().server_bind()
 
 
+class TLSDualStackServer(DualStackServer):
+    """The same pages over https (HTTPS_PORT), so phones and laptops will give the page the microphone for
+    voice commands. Self-signed cert shared with the enrolment page (~/.campus_bot/tls, made by the face
+    service). The handshake runs in the request thread, so a browser stuck on the cert warning can't block
+    everyone else."""
+    daemon_threads = True
+
+    def __init__(self, addr, handler, ctx):
+        self.ctx = ctx
+        super().__init__(addr, handler)
+
+    def get_request(self):
+        sock, addr = self.socket.accept()
+        sock.settimeout(30)
+        return self.ctx.wrap_socket(sock, server_side=True, do_handshake_on_connect=False), addr
+
+    def finish_request(self, request, client_address):
+        import ssl
+        try:
+            request.do_handshake()
+            request.settimeout(None)            # long-lived MJPEG streams must not time out
+        except (ssl.SSLError, OSError):
+            return
+        super().finish_request(request, client_address)
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+def start_https():
+    import ssl
+    crt, key = (os.path.expanduser(f'~/.campus_bot/tls/enroll.{x}') for x in ('crt', 'key'))
+    if not (os.path.exists(crt) and os.path.exists(key)):
+        print(f'https dashboard off: no cert in ~/.campus_bot/tls yet (run/face.sh on makes it)', flush=True)
+        return None
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(crt, key)
+    srv = TLSDualStackServer(('::', HTTPS_PORT), Handler, ctx)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    print(f'dashboard also on https://{socket.gethostname()}.local:{HTTPS_PORT} (voice commands need https)',
+          flush=True)
+    return srv
+
+
 def main():
     rclpy.init()
     ros = Ros()
@@ -1041,6 +1154,10 @@ def main():
               flush=True)
     srv = DualStackServer(('::', PORT), Handler)
     print(f'dashboard on http://0.0.0.0:{PORT}  (map: {AREA})', flush=True)
+    try:
+        start_https()
+    except Exception as e:                      # never let https trouble take the plain dashboard down
+        print(f'https dashboard off: {e}', flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

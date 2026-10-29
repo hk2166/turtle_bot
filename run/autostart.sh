@@ -41,6 +41,10 @@ fi
 if [[ "${FACE:-1}" == 1 ]]; then
   run/face.sh on || warn "face service didn't start (see $LOG_DIR/face.log): deliveries still work"
 fi
+# voice / typed commands understood by Claude (nodes/command_service.py). Optional (COMMANDS=0 skips).
+if [[ "${COMMANDS:-1}" == 1 ]]; then
+  run/command.sh on || warn "command service didn't start (see $LOG_DIR/command.log): the queue still works"
+fi
 
 AREA="$(cat "$RUN_DIR/dash_map" 2>/dev/null)"
 if [[ -z "$AREA" || ! -f "maps/${AREA}_clean.yaml" ]]; then

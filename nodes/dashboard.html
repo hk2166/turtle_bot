@@ -82,6 +82,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 #setpose.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
 #fenceb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #erasefb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
+#amic.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #pinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
 #unpinb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #movepinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
@@ -156,6 +157,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    <button id="movepinb" onclick="movePinBtn()" title="then press on a pin and drag it to the right spot">✥ MOVE PIN</button>
    <button id="unpinb" onclick="unpinBtn()" title="then tap a pin on the map to delete it">✕ REMOVE PIN</button>
    <button onclick="whosThere()" title="face-identify who is at the robot now (use when loading a parcel). Logs only — never blocks a delivery.">👤 WHO'S THERE</button>
+   <button onclick="cmdFromMission()" title="give the robot a spoken or typed command (opens QUEUE & PLACES)">🎤 COMMAND</button>
    <small id="fit"></small>
   </div>
  </div>
@@ -215,6 +217,17 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    <span id="qstate">…</span>
    <button id="qpause" onclick="qPause()">⏸ PAUSE QUEUE</button>
    <button onclick="qClear()" style="border-color:var(--bad);color:var(--bad)">✕ CLEAR QUEUE</button>
+  </div>
+  <div class="row" style="margin-top:8px;flex-wrap:nowrap">
+   <button id="amic" onclick="aListen()" title="speak a command (needs the https dashboard)">🎤</button>
+   <input id="acmdtext" maxlength="300" placeholder="command: “take the charger from Hemant to Rahul's office”"
+     style="flex:1;min-width:0;background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inherit;padding:6px 8px;border-radius:4px">
+   <button onclick="aSend(false)">SEND</button>
+  </div>
+  <small id="acmdmsg"></small>
+  <div id="aplan" style="display:none;margin-top:6px;padding:8px;border:1px dashed var(--fg);border-radius:4px">
+   <div id="aplansum"></div><ol id="aplanlegs" style="margin:4px 0 0 18px"></ol>
+   <div class="row"><button onclick="aRun()">✔ CONFIRM — QUEUE IT</button><button onclick="aClear()">✕</button></div>
   </div>
   <div id="qlist" style="margin-top:8px"></div>
  </div>
@@ -549,9 +562,13 @@ function renderQueue(s){
   if(!q.jobs.length)box.appendChild(mk('small','no requests yet'));
   [...q.jobs].reverse().forEach(j=>{const r=document.createElement('div');r.className='qrow';
    const isOpen=['waiting','driving','arrived'].includes(j.status);
-   r.appendChild(mk('span',`${j.status=='waiting'?'#'+j.pos:j.status.toUpperCase()}  ${j.name} → ${j.place_name}`+
-     `  ${new Date(j.created*1000).toTimeString().slice(0,5)}${j.note?'  ('+j.note+')':''}`));
+   const dest=j.stops?`${j.stops.join(' → ')}  [step ${j.step}]`:j.place_name;
+   r.appendChild(mk('span',`${j.status=='waiting'?'#'+j.pos:j.status.toUpperCase()}  ${j.name} → ${dest}`+
+     `  ${new Date(j.created*1000).toTimeString().slice(0,5)}${j.note?'  ('+j.note+')':''}`+
+     (j.command?`  🎤 “${j.command}”`:'')+(j.loaded_by?`  · loaded by ${j.loaded_by}`:'')+(j.handed_to?`  · handed to ${j.handed_to}`:'')));
    if(!isOpen)r.style.opacity=.5;
+   if(j.status=='arrived'&&j.stops){const c=mk('button',j.action=='pickup'?'✔ LOADED':'✔ DELIVERED');
+    c.onclick=async()=>{const x=await(await post('/api/trip/confirm',{id:j.id,who:'admin'})).json();log('trip: '+(x.msg||''))};r.appendChild(c)}
    if(isOpen){const b=mk('button','✕ CANCEL');b.onclick=()=>qCancel(j.id,j.name);r.appendChild(b)}
    box.appendChild(r)})}
  const pk=JSON.stringify(s.places||[]);if(pk!=lastP){lastP=pk;const box=document.getElementById('plist');box.textContent='';
@@ -559,6 +576,44 @@ function renderQueue(s){
   (s.places||[]).forEach(p=>{const r=document.createElement('div');r.className='qrow';
    r.appendChild(mk('span',`📍 ${(s.places||[]).indexOf(p)+1} · ${p.name}  (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`));
    const b=mk('button','✕ DELETE');b.onclick=()=>pDelete(p.id,p.name);r.appendChild(b);box.appendChild(r)})}}
+// ---- voice / typed commands (admin): speech -> text in the browser, text -> plan (Claude), then CONFIRM
+const SRec=window.SpeechRecognition||window.webkitSpeechRecognition;
+let aRec=null, aPlan=null, aSpoken=false;
+const aDev=(()=>{try{let d=localStorage.getItem('cb_admin_device');
+ if(!d){d='admin-'+(crypto.randomUUID?crypto.randomUUID():Date.now());localStorage.setItem('cb_admin_device',d)}return d}
+ catch(e){return 'admin-'+Date.now()}})();
+const aMsg=(t,c)=>{const m=document.getElementById('acmdmsg');m.textContent=t||'';m.className=c||''};
+function cmdFromMission(){setView('queue',document.querySelectorAll('.vtab')[2]);
+ setTimeout(()=>{document.getElementById('acmdtext').focus();aListen()},150)}
+function aListen(){
+ if(!SRec){aMsg('this browser has no speech input: type the command','bad');return}
+ if(!window.isSecureContext){aMsg(`🎤 needs the https dashboard: https://${location.hostname}:8444/admin (typing works here)`,'bad');return}
+ if(aRec){aRec.stop();return}
+ aRec=new SRec();aRec.lang='en-IN';aRec.interimResults=true;
+ document.getElementById('amic').classList.add('armed');aMsg('listening…');
+ aRec.onresult=e=>{let t='';for(const r of e.results)t+=r[0].transcript;document.getElementById('acmdtext').value=t};
+ aRec.onerror=e=>aMsg(e.error=='not-allowed'?'microphone blocked for this page':'didn\'t catch that ('+e.error+')','bad');
+ aRec.onend=()=>{aRec=null;document.getElementById('amic').classList.remove('armed');
+  if(document.getElementById('acmdtext').value.trim())aSend(true)};
+ aRec.start()}
+function aClear(){aPlan=null;document.getElementById('aplan').style.display='none'}
+const aDo={pickup:'collect at',deliver:'deliver to',go:'go to'};
+async function aSend(voice){
+ const text=document.getElementById('acmdtext').value.trim();aClear();if(!text)return;aSpoken=!!voice;
+ aMsg('thinking…');
+ let r;try{r=await(await post('/api/command/parse',{text,name:'admin',device:aDev})).json()}catch(e){r={ok:false,error:'no answer'}}
+ if(!r.ok){aMsg(r.error,'bad');return}
+ if(!r.plan.understood){aMsg('🤔 '+r.plan.question,'bad');aSay(r.plan.question);return}
+ aPlan={plan:r.plan,text};aMsg(`understood in ${(r.ms/1000).toFixed(1)} s`);
+ document.getElementById('aplansum').textContent=r.plan.summary;const ol=document.getElementById('aplanlegs');ol.textContent='';
+ r.plan.legs.forEach(l=>ol.appendChild(mk('li',`${aDo[l.action]} ${l.place_name}`+(l.note?` — ${l.note}`:''))));
+ document.getElementById('aplan').style.display='block';aSay(r.plan.summary)}
+function aSay(t){if(aSpoken&&window.speechSynthesis&&t){try{speechSynthesis.speak(new SpeechSynthesisUtterance(t))}catch(e){}}}
+async function aRun(){
+ if(!aPlan)return;const r=await(await post('/api/command/run',{...aPlan,name:'admin',device:aDev})).json();
+ if(!r.ok){aMsg(r.msg,'bad');return}
+ aMsg('✔ queued');log('command queued: '+aPlan.plan.summary);aClear();document.getElementById('acmdtext').value=''}
+document.getElementById('acmdtext').addEventListener('keydown',e=>{if(e.key=='Enter')aSend(false)});
 function feed(on){feedOn=on;syncFeeds()}
 // EYES source: the mast Brio, the face HIKVISION (boxed + named by the face service), or both (PiP)
 // default MAST: the face view runs the face model (~a quarter of a core per open tab), so it's opt-in here;

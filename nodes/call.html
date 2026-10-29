@@ -33,6 +33,19 @@ button.bad{border-color:var(--bad);color:var(--bad);text-align:center}
 .q.now .st{color:var(--warn)}
 .q.me .who{text-decoration:underline}
 #err{color:var(--bad);min-height:1.4em;margin-top:8px;font-size:13px}
+/* voice / typed commands */
+.cmdrow{display:flex;gap:8px;margin-top:8px}
+.cmdrow input{flex:1}
+.cmdrow button{width:auto;margin:0;padding:0 14px;text-align:center}
+#mic.on{background:var(--bad);border-color:var(--bad);color:#140404;animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.6}}
+#plan{display:none;margin-top:10px;padding:10px;border:1px dashed var(--fg);border-radius:6px}
+#plan ol{margin:6px 0 0 20px}
+#plan .row{display:flex;gap:8px}
+#plan .row button{text-align:center}
+#cmdmsg{min-height:1.3em;margin-top:6px;font-size:13px}
+#here{border-color:var(--warn)}
+#here h2{color:var(--warn)}
 /* admin entry: small, out of the way, bottom-right corner */
 #adminbtn{position:fixed;right:12px;bottom:12px;width:auto;margin:0;padding:7px 12px;font-size:12px;
   letter-spacing:2px;border-color:var(--line);color:var(--dim);background:var(--panel);text-align:center;
@@ -45,6 +58,13 @@ body{padding-bottom:64px}
 <div class="card">
  <h2>ROBOT'S VIEW · <span id="robot">…</span></h2>
  <div id="camwrap"><img id="cam" alt="live view from the robot"><span id="camoff">connecting…</span></div>
+</div>
+
+<div class="card" id="here" style="display:none">
+ <h2>THE ROBOT IS WAITING AT A STOP</h2>
+ <div id="herestatus" style="font-size:16px"></div>
+ <div class="dim" id="heresub"></div>
+ <button class="big" id="herebtn" onclick="confirmHere()"></button>
 </div>
 
 <div class="card" id="mycard" style="display:none">
@@ -66,6 +86,24 @@ body{padding-bottom:64px}
  <input id="name" maxlength="40" placeholder="Your name (e.g. Priya)" autocomplete="name">
  <div id="places" class="dim" style="margin-top:6px">loading…</div>
  <div id="err"></div>
+</div>
+
+<div class="card" id="cmdcard" style="display:none">
+ <h2>🎤 TELL THE ROBOT</h2>
+ <div class="dim">e.g. “go to Hemant, take the charger from him and bring it to Rahul's office”.
+  You'll see the plan before the robot moves.</div>
+ <div class="cmdrow">
+  <button id="mic" onclick="listen()" title="speak a command">🎤</button>
+  <input id="cmdtext" maxlength="300" placeholder="say or type a command">
+  <button id="cmdsend" onclick="sendCmd(false)">SEND</button>
+ </div>
+ <div class="dim" id="micnote"></div>
+ <div id="cmdmsg"></div>
+ <div id="plan">
+  <div id="plansum"></div><ol id="planlegs"></ol>
+  <div class="row"><button class="big" onclick="runCmd()">✔ CONFIRM</button>
+   <button class="bad" onclick="clearPlan()">✕</button></div>
+ </div>
 </div>
 
 <div class="card">
@@ -105,6 +143,53 @@ async function cancelMine(){if(!mine)return;if(!confirm('Cancel your request?'))
  await api('/api/request/cancel',mine);poll()}
 async function gotIt(){if(!mine)return;await api('/api/request/done',mine);poll()}
 
+// ---- voice / typed commands: speech -> text in the browser, text -> plan by the robot (Claude), then a
+// person confirms. Browsers only give a page the microphone over https.
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let rec=null, plan=null, spoken=false, active=null;
+if(!SR) $('micnote').textContent='This browser has no speech input: type the command instead (Chrome, Edge and Safari can listen).';
+else if(!window.isSecureContext){
+ const u=`https://${location.hostname}:8444/`;
+ $('micnote').innerHTML='';$('micnote').append('🎤 needs the secure page: ',
+   Object.assign(document.createElement('a'),{href:u,textContent:u,style:'color:var(--fg)'}),
+   ' (tap through the warning once). Typing works here too.');
+}
+function listen(){
+ if(!SR||!window.isSecureContext){$('cmdtext').focus();return}
+ if(rec){rec.stop();return}
+ rec=new SR();rec.lang='en-IN';rec.interimResults=true;rec.maxAlternatives=1;
+ $('mic').classList.add('on');$('cmdmsg').textContent='listening… say the whole command';$('cmdmsg').className='dim';
+ rec.onresult=e=>{let t='';for(const r of e.results)t+=r[0].transcript;$('cmdtext').value=t};
+ rec.onerror=e=>{$('cmdmsg').textContent=e.error=='not-allowed'?'microphone blocked: allow it for this page':'didn\'t catch that ('+e.error+')';$('cmdmsg').className='badc'};
+ rec.onend=()=>{rec=null;$('mic').classList.remove('on');if($('cmdtext').value.trim())sendCmd(true)};
+ rec.start()}
+$('cmdtext').addEventListener('keydown',e=>{if(e.key=='Enter')sendCmd(false)});
+function clearPlan(){plan=null;$('plan').style.display='none'}
+const DO={pickup:'collect',deliver:'deliver',go:'go to'};
+async function sendCmd(viaVoice){
+ const text=$('cmdtext').value.trim(), name=nameEl.value.trim();clearPlan();
+ if(!name){$('cmdmsg').textContent='Please enter your name above first.';$('cmdmsg').className='badc';nameEl.focus();return}
+ if(!text)return;
+ spoken=!!viaVoice;$('cmdsend').disabled=true;$('cmdmsg').textContent='thinking…';$('cmdmsg').className='dim';
+ let r;try{r=await api('/api/command/parse',{text,name,device})}catch(_){r={ok:false,error:'robot not reachable'}}
+ $('cmdsend').disabled=false;
+ if(!r.ok){$('cmdmsg').textContent=r.error;$('cmdmsg').className='badc';return}
+ if(!r.plan.understood){$('cmdmsg').textContent='🤔 '+r.plan.question;$('cmdmsg').className='warn';say(r.plan.question);return}
+ plan={plan:r.plan,text};$('cmdmsg').textContent='';
+ $('plansum').textContent=r.plan.summary;const ol=$('planlegs');ol.textContent='';
+ r.plan.legs.forEach(l=>ol.appendChild(el('li',`${DO[l.action]} ${l.place_name}`+(l.note?` — ${l.note}`:''))));
+ $('plan').style.display='block';say(r.plan.summary+' Tap confirm to go.')}
+function say(t){if(spoken&&window.speechSynthesis&&t){try{speechSynthesis.speak(new SpeechSynthesisUtterance(t))}catch(_){}}}
+async function runCmd(){
+ if(!plan)return;const r=await api('/api/command/run',{...plan,name:nameEl.value.trim(),device});
+ if(!r.ok){$('cmdmsg').textContent=r.msg;$('cmdmsg').className='badc';return}
+ mine={id:r.id,token:r.token};store.set('cb_job',JSON.stringify(mine));clearPlan();$('cmdtext').value='';
+ $('cmdmsg').textContent='✔ queued';$('cmdmsg').className='';poll()}
+async function confirmHere(){
+ if(!active)return;$('herebtn').disabled=true;
+ const r=await api('/api/trip/confirm',{id:active.id,who:nameEl.value.trim()});
+ $('herebtn').disabled=false;if(!r.ok)alert(r.msg);poll()}
+
 const LABEL={ready:'robot ready',busy:'robot on a trip',paused:'queue paused by admin',offline:'robot offline'};
 async function poll(){
  try{const d=await api('/api/queue?device='+encodeURIComponent(device));
@@ -113,22 +198,36 @@ async function poll(){
   const ST={driving:'🚗 on the way',arrived:'📦 arrived'};
   d.queue.forEach(j=>{const r=document.createElement('div');
    r.className='q'+(j.status=='waiting'?'':' now')+(d.mine&&d.mine.id==j.id?' me':'');
-   r.appendChild(el('span',j.name+' → '+j.place,'who'));
+   r.appendChild(el('span',j.name+' → '+(j.stops?j.stops.map(s=>s.split(' @ ')[1]).join(' → ')+` (step ${j.step})`:j.place),'who'));
    r.appendChild(el('span',ST[j.status]||('#'+j.pos+' in line'),'st'));q.appendChild(r)});
   $('qempty').style.display=d.queue.length?'none':'';
   const waiting=d.queue.filter(j=>j.status=='waiting').length;
   $('qcount').textContent=d.queue.length?`${waiting} waiting`+(d.queue.length>waiting?' · 1 trip in progress':''):'empty';
   const m=d.mine, open=m&&['waiting','driving','arrived'].includes(m.status);
   $('mycard').style.display=m?'':'none';$('placecard').style.display=open?'none':'';
+  $('cmdcard').style.display=d.commands&&!open?'':'none';
+  // a multi-stop trip waiting at a stop: whoever is there confirms it (not only the requester)
+  active=d.active;const mineHere=active&&m&&m.id==active.id;
+  $('here').style.display=active&&!mineHere?'':'none';
+  if(active){
+   const verb={pickup:`to collect ${active.item} for ${active.by}`,deliver:`with ${active.item} from ${active.by}`}[active.action]||'';
+   $('herestatus').textContent=`📦 At ${active.place} ${verb} (step ${active.step})`;
+   $('heresub').textContent=active.action=='pickup'?`Put it in the crate, then tap LOADED. It gives up in ${active.wait_left} s.`
+     :`Take it from the crate, then tap GOT IT. It moves on in ${active.wait_left} s.`;
+   $('herebtn').textContent=active.action=='pickup'?'✔ LOADED, SEND IT ON':'✔ GOT IT, THANKS'}
   if(m){
-   const S={waiting:`#${m.pos} in line for ${m.place}`,driving:`On its way to ${m.place} 🚗`,
-            arrived:`Arrived at ${m.place}! Take your item`,done:'Done. Thanks!',
-            failed:`Couldn't reach ${m.place}`,cancelled:'Request cancelled'};
+   const trip=m.step?` (step ${m.step}: ${DO[m.action]||''} ${m.place})`:'';
+   const S={waiting:`#${m.pos} in line`+(trip||` for ${m.place}`),driving:`On its way to ${m.place} 🚗`+trip,
+            arrived:m.action=='pickup'?`At ${m.place}: waiting for the item to be loaded`:`Arrived at ${m.place}! Take your item`,
+            done:'Done. Thanks!',failed:m.step?`Trip stopped: ${m.note||'couldn\'t finish'}`:`Couldn't reach ${m.place}`,
+            cancelled:'Request cancelled'};
    $('status').textContent=S[m.status]||m.status;
-   $('sub').textContent=m.status=='arrived'?`It leaves in ${m.wait_left} s if you don't tap GOT IT`:
+   $('sub').textContent=m.status=='arrived'?(m.action=='pickup'?`Ask them to tap LOADED (or tap it here). It gives up in ${m.wait_left} s.`
+       :`It leaves in ${m.wait_left} s if you don't tap GOT IT`):
      m.status=='waiting'&&d.robot=='paused'?'The admin paused the queue for a moment.':
      m.status=='waiting'&&d.robot=='offline'?'The robot is offline: your request waits.':(m.note||'');
    $('gotit').style.display=m.status=='arrived'?'':'none';
+   $('gotit').textContent=m.action=='pickup'?'✔ LOADED, SEND IT ON':'✔ GOT IT, THANKS';
    $('cancel').style.display=open&&m.status!='arrived'?'':'none';
    if(!open){mine=null;store.set('cb_job','null')}
   }

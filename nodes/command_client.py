@@ -1,0 +1,34 @@
+# Written 2026-10-29: the dashboard side of voice/typed commands — a dependency-free client for
+# nodes/command_service.py (which holds the anthropic SDK in its own venv). New file.
+"""Never raises: any failure comes back as {'ok': False, 'error': ...} for the page to show."""
+import json
+import os
+import urllib.error
+import urllib.request
+
+BASE = os.environ.get('COMMAND_URL', 'http://127.0.0.1:8071')
+TIMEOUT = float(os.environ.get('COMMAND_TIMEOUT', '45'))   # Claude at low effort: a few seconds; SDK retry 1
+
+
+def _call(path, payload=None, timeout=TIMEOUT):
+    try:
+        data = None if payload is None else json.dumps(payload).encode()
+        req = urllib.request.Request(f'{BASE}{path}', data=data, method='GET' if data is None else 'POST',
+                                     headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read())
+        except Exception:
+            return {'ok': False, 'error': f'command service error {e.code}'}
+    except Exception:
+        return {'ok': False, 'error': 'voice commands are offline right now (command service not running)'}
+
+
+def health():
+    return _call('/health', timeout=2.0)
+
+
+def parse(text, places, requester=None):
+    return _call('/parse', {'text': text, 'places': places, 'requester': requester or {}})

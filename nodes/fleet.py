@@ -33,6 +33,12 @@ ADMIN_FILE = os.path.expanduser('~/.campus_bot/admin.yaml')
 QUEUE_FILE = os.path.expanduser('~/.campus_bot/run/queue.json')
 HOLD_FILE = os.path.expanduser('~/.campus_bot/run/hold_position')   # fresh = auto_clear stays put
 ARRIVE_WAIT = float(os.environ.get('ARRIVE_WAIT', '120'))
+# Multi-stop trips (voice/typed commands, nodes/command_service.py): at a PICKUP stop the robot waits this
+# long for someone to tap LOADED; with nothing loaded it cancels the rest of the trip (no point driving an
+# empty crate to the recipient).
+PICKUP_WAIT = float(os.environ.get('PICKUP_WAIT', '180'))
+MAX_LEGS = 6
+ACTIONS = ('pickup', 'deliver', 'go')
 # A blocked trip is retried: Nav2 already fights for ~1-2 min (12 recovery rounds, 1 Hz replans);
 # when it still gives up, the blocker is usually a person or a parked chair, which moves. So wait
 # RETRY_DELAY and try again, TRIP_TRIES attempts in all, re-snapping the goal to floor that is
@@ -218,6 +224,8 @@ class Queue:
         for j in self.jobs:            # a restart mid-trip: that trip starts again from the front
             if j['status'] == 'driving':
                 j['status'] = 'waiting'
+            elif j['status'] == 'arrived' and j.get('legs'):
+                j['arrived'] = time.time()     # multi-stop trip: the robot is still at that stop, keep waiting
             elif j['status'] == 'arrived':     # already delivered: don't drive back to them
                 self._finish(j, 'done', 'dashboard restarted while waiting for GOT IT')
         threading.Thread(target=self._run, daemon=True).start()
@@ -257,10 +265,35 @@ class Queue:
             return 'offline'
         return 'busy' if any(j['status'] in OPEN for j in self.jobs) else 'ready'
 
+    @staticmethod
+    def _leg(job):
+        """The current stop of a multi-stop trip, or None for an ordinary call-the-robot request."""
+        legs = job.get('legs')
+        return legs[job.get('leg', 0)] if legs else None
+
+    def _wait_limit(self, job):
+        leg = self._leg(job)
+        return PICKUP_WAIT if leg and leg['action'] == 'pickup' else ARRIVE_WAIT
+
+    def _trip_info(self, job):
+        """Step / action / stops of a multi-stop trip for the pages (empty for ordinary requests)."""
+        leg = self._leg(job)
+        if not leg:
+            return {}
+        return {'step': f'{job["leg"] + 1}/{len(job["legs"])}', 'action': leg['action'],
+                'item': job.get('item') or 'something', 'summary': job.get('summary', ''),
+                'stops': [f'{x["action"]} @ {x["place_name"]}' for x in job['legs']]}
+
     def public_view(self, device=''):
         with self.lock:
             lst = [{'id': j['id'], 'name': j['name'], 'place': j['place_name'], 'status': j['status'],
-                    'pos': self._position(j)} for j in self._open()]
+                    'pos': self._position(j), **self._trip_info(j)} for j in self._open()]
+            # a multi-stop trip waiting at a stop: whoever is there (not the requester's phone) confirms it
+            act = next((j for j in self.jobs if j['status'] == 'arrived' and j.get('legs')), None)
+            active = None
+            if act is not None:
+                active = {'id': act['id'], 'place': act['place_name'], 'by': act['name'], **self._trip_info(act),
+                          'wait_left': max(0, int(self._wait_limit(act) - (time.time() - act['arrived'])))}
             # this device's open request, else its most recent one (list order is NOT creation order)
             own = [j for j in self.jobs if device and j['device'] == device]
             mine = next((j for j in own if j['status'] in OPEN), None) or \
@@ -272,16 +305,17 @@ class Queue:
                 if mine['status'] == 'waiting' and left > 0:
                     note = f'path blocked: retrying in {int(left)} s (try {mine["tries"] + 1}/{TRIP_TRIES})'
                 m = {'id': mine['id'], 'status': mine['status'], 'place': mine['place_name'],
-                     'pos': self._position(mine), 'note': note,
-                     'wait_left': max(0, int(ARRIVE_WAIT - (time.time() - mine['arrived'])))
+                     'pos': self._position(mine), 'note': note, **self._trip_info(mine),
+                     'wait_left': max(0, int(self._wait_limit(mine) - (time.time() - mine['arrived'])))
                      if mine['status'] == 'arrived' else None}
-            return {'robot': self.robot_status(), 'queue': lst, 'mine': m}
+            return {'robot': self.robot_status(), 'queue': lst, 'mine': m, 'active': active}
 
     def admin_view(self):
         with self.lock:
             return {'paused': self.paused, 'msg': self.msg, 'robot': self.robot_status(),
-                    'jobs': [{k: j.get(k) for k in ('id', 'name', 'place_name', 'status', 'created', 'note')}
-                             | {'pos': self._position(j)} for j in self._recent(25)]}
+                    'jobs': [{k: j.get(k) for k in ('id', 'name', 'place_name', 'status', 'created', 'note',
+                                                    'command', 'loaded_by', 'handed_to')}
+                             | {'pos': self._position(j)} | self._trip_info(j) for j in self._recent(25)]}
 
     def _recent(self, n):
         """All open jobs plus the newest finished ones, oldest first, n in all (open never cut off)."""
@@ -318,6 +352,91 @@ class Queue:
             self._save()
             self.log(f'queue: {name} called the robot to {place["name"]}')
             return job, 'ok'
+
+    def mission(self, name, device, legs, item='', summary='', command='', admin=False):
+        """A multi-stop trip from a voice/typed command (plan from nodes/command_service.py, confirmed by a
+        person on the page): legs = [{'action': pickup|deliver|go, 'place_id', 'note'}]. Re-checked here
+        against the current map: the plan came back through the browser."""
+        name = re.sub(r'\s+', ' ', str(name or '')).strip()[:40]
+        device = str(device or '')[:64]
+        if not name:
+            return None, 'please enter your name'
+        if not device:
+            return None, 'reload the page and try again'
+        if not isinstance(legs, list) or not 1 <= len(legs) <= MAX_LEGS:
+            return None, f'a trip needs 1-{MAX_LEGS} stops'
+        places = {p['id']: p for p in load_places(self.area_fn())}
+        stops = []
+        for leg in legs:
+            p = places.get(str((leg or {}).get('place_id')))
+            act = (leg or {}).get('action')
+            if p is None or act not in ACTIONS:
+                return None, 'a stop in that plan is not on this map any more: say it again'
+            stops.append({'action': act, 'place_id': p['id'], 'place_name': p['name'], 'x': p['x'], 'y': p['y'],
+                          'yaw': p.get('yaw'), 'note': str(leg.get('note', ''))[:80]})
+        with self.lock:
+            for j in self._open():
+                if admin:
+                    break                   # the admin may line up several trips
+                if j['device'] == device:
+                    return None, f'this device already has an open request (for {j["name"]}): cancel it first'
+                if j['name'].lower() == name.lower():
+                    return None, f'{j["name"]} already has a request ({j["status"]}): cancel it first'
+            if sum(j['status'] == 'waiting' for j in self.jobs) >= MAX_WAITING:
+                return None, 'the queue is full right now: try again in a few minutes'
+            job = {'id': secrets.token_hex(4), 'name': name, 'device': device, 'token': secrets.token_hex(12),
+                   'status': 'waiting', 'created': time.time(), 'tries': 0, 'not_before': 0,
+                   'started': None, 'arrived': None, 'finished': None, 'note': '',
+                   'legs': stops, 'leg': 0, 'item': str(item or '')[:60] or 'something',
+                   'summary': str(summary or '')[:200], 'command': str(command or '')[:300]}
+            self._set_leg(job, 0)
+            self.jobs.append(job)
+            self._save()
+            self.log(f'queue: {name}: ' + ' → '.join(f'{s["action"]} @ {s["place_name"]}' for s in stops)
+                     + (f'  ("{job["command"]}")' if job['command'] else ''))
+            return job, 'ok'
+
+    @staticmethod
+    def _set_leg(job, i):
+        """Make stop i current: the dispatcher, retries and pages read the top-level place fields."""
+        leg = job['legs'][i]
+        job['leg'] = i
+        for k in ('place_id', 'place_name', 'x', 'y', 'yaw'):
+            job[k] = leg[k]
+        job['tries'], job['not_before'], job['note'] = 0, 0, ''
+
+    def _advance(self, job, why):
+        """This stop is done: on to the next one straight away (ahead of the queue), or finish the trip."""
+        if job.get('legs') and job['leg'] + 1 < len(job['legs']):
+            self._set_leg(job, job['leg'] + 1)
+            job['status'], job['started'], job['arrived'] = 'waiting', None, None
+            self.jobs.remove(job)                  # keep its turn: nobody else's request jumps in mid-trip
+            first = next((i for i, k in enumerate(self.jobs) if k['status'] == 'waiting'), len(self.jobs))
+            self.jobs.insert(first, job)
+            self.log(f'queue: {why}; next stop {job["place_name"]} ({job["leg"] + 1}/{len(job["legs"])})')
+        else:
+            self._finish(job, 'done', why)
+            self.log(f'queue: trip for {job["name"]} finished ({why})')
+
+    def confirm(self, jid, token=None, admin=False, who=''):
+        """LOADED / GOT IT at the current stop. For a multi-stop trip anyone at the stop may confirm (the
+        person loading it isn't the requester); an ordinary request still needs the caller's token."""
+        with self.lock:
+            j = next((j for j in self.jobs if j['id'] == jid and j['status'] == 'arrived'), None)
+            if j is None:
+                return False, 'the robot is not waiting there any more'
+            if not j.get('legs'):
+                if not (admin or hmac.compare_digest(str(token or ''), j['token'])):
+                    return False, 'only the caller can confirm this one'
+                self._finish(j, 'done', 'confirmed by the caller' if not admin else 'confirmed by the admin')
+                self._save()
+                return True, 'done'
+            act = self._leg(j)['action']
+            what = {'pickup': 'loaded', 'deliver': 'delivered', 'go': 'reached'}[act]
+            who = re.sub(r'\s+', ' ', str(who or '')).strip()[:40]
+            self._advance(j, f'{what} at {j["place_name"]}' + (f' (confirmed by {who})' if who else ''))
+            self._save()
+            return True, what
 
     def _face_async(self, where, job):
         """Identify who is at the crate (where='pickup' as it leaves, 'handover' on arrival) and log it.
@@ -361,6 +480,8 @@ class Queue:
             j = next((j for j in self.jobs if j['id'] == jid and j['status'] == 'arrived'), None)
             if j is None or not hmac.compare_digest(str(token or ''), j['token']):
                 return False
+            if j.get('legs'):                     # the requester's own GOT IT on a multi-stop trip: this stop
+                return self.confirm(jid, token=token, who=j['name'])[0]
             self._finish(j, 'done', 'confirmed by the caller')
             self._save()
             return True
@@ -420,9 +541,16 @@ class Queue:
                 r = self.nav.result
                 if r == 'succeeded':
                     active['status'], active['arrived'] = 'arrived', time.time()
-                    self.log(f'queue: arrived at {active["place_name"]} for {active["name"]}')
+                    leg = self._leg(active)
+                    if leg and leg['action'] == 'go':      # just "come here": nothing to wait for
+                        self._advance(active, f'reached {active["place_name"]}')
+                        self._save()
+                        return
+                    what = {'pickup': ' to collect', 'deliver': ' to deliver'}.get(leg['action'], '') if leg else ''
+                    self.log(f'queue: arrived at {active["place_name"]}{what} for {active["name"]}')
                     self._save()
-                    self._face_async('handover', active)   # who actually took the parcel (log only)
+                    # log only: who loaded it at a pickup stop / who took it at a delivery
+                    self._face_async('pickup' if leg and leg['action'] == 'pickup' else 'handover', active)
                 elif r in ('aborted', 'rejected'):
                     active['tries'] = active.get('tries', 0) + 1
                     if active['tries'] < TRIP_TRIES:
@@ -447,8 +575,16 @@ class Queue:
             if active and active['status'] == 'arrived':
                 with open(HOLD_FILE, 'w'):     # waiting for the caller: no idle relocation
                     pass
-                if time.time() - active['arrived'] > ARRIVE_WAIT:
-                    self._finish(active, 'done', f'no GOT IT within {int(ARRIVE_WAIT)} s')
+                leg = self._leg(active)
+                if time.time() - active['arrived'] > self._wait_limit(active):
+                    if leg and leg['action'] == 'pickup':  # nothing loaded: don't carry an empty crate on
+                        self._finish(active, 'failed', f'nothing loaded at {active["place_name"]} within '
+                                                       f'{int(PICKUP_WAIT)} s: trip cancelled')
+                        self.log(f'queue: {active["note"]}')
+                    elif leg:
+                        self._advance(active, f'no GOT IT at {active["place_name"]} within {int(ARRIVE_WAIT)} s')
+                    else:
+                        self._finish(active, 'done', f'no GOT IT within {int(ARRIVE_WAIT)} s')
                     self._save()
                 return
             if self.paused or not self.ready_fn() or not self.nav.ready():
@@ -482,5 +618,5 @@ class Queue:
             retry = f' (try {nxt["tries"] + 1}/{TRIP_TRIES})' if nxt.get('tries') else ''
             self.log(f'queue: driving to {nxt["place_name"]} for {nxt["name"]}{retry}')
             self._save()
-            if not nxt.get('tries'):                       # first attempt: whoever loaded it, as it leaves
+            if not nxt.get('tries') and not nxt.get('legs'):   # whoever loaded it, as it leaves (trips log it at the pickup stop)
                 self._face_async('pickup', nxt)
