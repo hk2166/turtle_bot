@@ -32,3 +32,12 @@ def health():
 
 def parse(text, places, requester=None):
     return _call('/parse', {'text': text, 'places': places, 'requester': requester or {}})
+
+
+def vision(mode, jpg, context=None, timeout=TIMEOUT):
+    """mode: hazard | blocked | describe | arrival; jpg: bytes of one camera frame."""
+    import base64
+    if not jpg:
+        return {'ok': False, 'error': 'no camera frame (is the mast camera running?)'}
+    return _call('/vision', {'mode': mode, 'image_b64': base64.b64encode(jpg).decode('ascii'),
+                             'context': context or {}}, timeout=timeout)

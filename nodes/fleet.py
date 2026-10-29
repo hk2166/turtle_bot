@@ -210,13 +210,16 @@ class Navigator:
 
 
 class Queue:
-    def __init__(self, ros, nav, area_fn, home_fn, ready_fn, log_fn, snap_fn=None, face_fn=None):
+    def __init__(self, ros, nav, area_fn, home_fn, ready_fn, log_fn, snap_fn=None, face_fn=None, vision_fn=None):
         self.ros, self.nav = ros, nav
         self.area_fn, self.home_fn, self.ready_fn, self.log = area_fn, home_fn, ready_fn, log_fn
         self.snap_fn = snap_fn        # (x, y) -> (x', y', moved) on currently reachable floor, or None
         # face_fn(where, job) -> a short "who is at the crate" label or None. Log-only: it never gates a
         # delivery, and runs in a background thread so a slow (or down) face service can't stall the queue.
         self.face_fn = face_fn
+        # vision_fn(mode, context) -> (result dict or None, error): one look through the mast camera by
+        # Claude (nodes/command_service.py). Seconds per look, so only for slow decisions, in a thread.
+        self.vision_fn = vision_fn
         self.lock = threading.RLock()
         self.jobs, self.paused, self.msg, self.homing = [], False, '', False
         self.want_home = False         # a trip ended: drive home once the robot is free (not only within 5 s)
@@ -293,6 +296,7 @@ class Queue:
             active = None
             if act is not None:
                 active = {'id': act['id'], 'place': act['place_name'], 'by': act['name'], **self._trip_info(act),
+                          'seen': act.get('seen', ''),
                           'wait_left': max(0, int(self._wait_limit(act) - (time.time() - act['arrived'])))}
             # this device's open request, else its most recent one (list order is NOT creation order)
             own = [j for j in self.jobs if device and j['device'] == device]
@@ -306,6 +310,7 @@ class Queue:
                     note = f'path blocked: retrying in {int(left)} s (try {mine["tries"] + 1}/{TRIP_TRIES})'
                 m = {'id': mine['id'], 'status': mine['status'], 'place': mine['place_name'],
                      'pos': self._position(mine), 'note': note, **self._trip_info(mine),
+                     'seen': mine.get('seen', '') if mine['status'] == 'arrived' else '',
                      'wait_left': max(0, int(self._wait_limit(mine) - (time.time() - mine['arrived'])))
                      if mine['status'] == 'arrived' else None}
             return {'robot': self.robot_status(), 'queue': lst, 'mine': m, 'active': active}
@@ -314,7 +319,7 @@ class Queue:
         with self.lock:
             return {'paused': self.paused, 'msg': self.msg, 'robot': self.robot_status(),
                     'jobs': [{k: j.get(k) for k in ('id', 'name', 'place_name', 'status', 'created', 'note',
-                                                    'command', 'loaded_by', 'handed_to')}
+                                                    'command', 'loaded_by', 'handed_to', 'seen')}
                              | {'pos': self._position(j)} | self._trip_info(j) for j in self._recent(25)]}
 
     def _recent(self, n):
@@ -438,6 +443,51 @@ class Queue:
             self._save()
             return True, what
 
+    def _vision_async(self, kind, job):
+        """kind 'blocked': look at what is in the way and set how long to wait (a person moves in seconds, a
+        chair needs someone, a closed door ends the trip). kind 'arrival': note whether anyone is there.
+        Background + best-effort: no camera, no key or a vague answer leaves the normal behaviour."""
+        if not self.vision_fn:
+            return
+        tries, leg = job.get('tries'), job.get('leg')
+        stop = self._leg(job)
+        ctx = {'destination': job['place_name'], 'requested by': job['name']}
+        if kind == 'arrival':
+            ctx['purpose'] = {'pickup': 'collect an item', 'deliver': 'deliver an item'}.get(
+                stop['action'] if stop else 'deliver', 'deliver an item')
+
+        def run():
+            try:
+                res, _err = self.vision_fn(kind, ctx)
+            except Exception as e:
+                self.log(f'vision error: {e}')
+                return
+            if not res:
+                return
+            with self.lock:
+                if kind == 'arrival':
+                    msg = str(res.get('message', ''))[:160]
+                    if job['status'] == 'arrived' and job.get('leg') == leg:
+                        job['seen'] = msg
+                        self._save()
+                    self.log(f'vision: at {job["place_name"]}: {msg}')
+                    return
+                msg = str(res.get('message') or res.get('what') or '')[:160]
+                self.log(f'vision: blocked on the way to {job["place_name"]}: {msg} [{res.get("cause")}]')
+                if res.get('cause') in ('nothing_visible', 'unclear'):
+                    return                                   # the camera can't help: keep the normal retry
+                if job['status'] == 'waiting' and job.get('tries') == tries and job.get('leg') == leg:
+                    if res.get('advice') == 'give_up':
+                        self._finish(job, 'failed', f'blocked: {msg}')
+                    else:
+                        job['not_before'] = time.time() + (10 if res.get('advice') == 'wait_short' else 60)
+                        job['note'] = f'path blocked: {msg}'
+                    self._save()
+                elif job['status'] == 'failed' and msg and msg not in job.get('note', ''):
+                    job['note'] = f'{job["note"]} — {msg}'
+                    self._save()
+        threading.Thread(target=run, daemon=True).start()
+
     def _face_async(self, where, job):
         """Identify who is at the crate (where='pickup' as it leaves, 'handover' on arrival) and log it.
         Background + best-effort: no camera / no face service / nobody recognised just logs nothing."""
@@ -551,6 +601,8 @@ class Queue:
                     self._save()
                     # log only: who loaded it at a pickup stop / who took it at a delivery
                     self._face_async('pickup' if leg and leg['action'] == 'pickup' else 'handover', active)
+                    active['seen'] = ''
+                    self._vision_async('arrival', active)     # is anyone there? (shown on the call page)
                 elif r in ('aborted', 'rejected'):
                     active['tries'] = active.get('tries', 0) + 1
                     if active['tries'] < TRIP_TRIES:
@@ -565,6 +617,7 @@ class Queue:
                         self.log(f'queue: trip to {active["place_name"]} for {active["name"]} failed '
                                  f'after {TRIP_TRIES} tries')
                     self._save()
+                    self._vision_async('blocked', active)    # what is in the way? (sets the wait / reason)
                 elif r == 'canceled':      # someone else (RViz, a script) took the robot: back in line, paused
                     active['status'], active['started'] = 'waiting', None
                     self.paused = True

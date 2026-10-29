@@ -171,6 +171,11 @@ async function sendCmd(viaVoice){
  if(!name){$('cmdmsg').textContent='Please enter your name above first.';$('cmdmsg').className='badc';nameEl.focus();return}
  if(!text)return;
  spoken=!!viaVoice;$('cmdsend').disabled=true;$('cmdmsg').textContent='thinking…';$('cmdmsg').className='dim';
+ if(/\b(what (do|can) you see|what'?s (around|in front of) you|describe (the )?(scene|surroundings|view))\b/i.test(text)){
+  let v;try{v=await api('/api/vision/describe',{device})}catch(_){v={ok:false,error:'robot not reachable'}}
+  $('cmdsend').disabled=false;
+  if(!v.ok){$('cmdmsg').textContent=v.error;$('cmdmsg').className='badc';return}
+  $('cmdmsg').textContent='👁 '+v.text;$('cmdmsg').className='';say(v.text);return}
  let r;try{r=await api('/api/command/parse',{text,name,device})}catch(_){r={ok:false,error:'robot not reachable'}}
  $('cmdsend').disabled=false;
  if(!r.ok){$('cmdmsg').textContent=r.error;$('cmdmsg').className='badc';return}
@@ -214,6 +219,7 @@ async function poll(){
    $('herestatus').textContent=`📦 At ${active.place} ${verb} (step ${active.step})`;
    $('heresub').textContent=active.action=='pickup'?`Put it in the crate, then tap LOADED. It gives up in ${active.wait_left} s.`
      :`Take it from the crate, then tap GOT IT. It moves on in ${active.wait_left} s.`;
+   if(active.seen)$('heresub').textContent+=` 👁 ${active.seen}`;
    $('herebtn').textContent=active.action=='pickup'?'✔ LOADED, SEND IT ON':'✔ GOT IT, THANKS'}
   if(m){
    const trip=m.step?` (step ${m.step}: ${DO[m.action]||''} ${m.place})`:'';
@@ -226,6 +232,7 @@ async function poll(){
        :`It leaves in ${m.wait_left} s if you don't tap GOT IT`):
      m.status=='waiting'&&d.robot=='paused'?'The admin paused the queue for a moment.':
      m.status=='waiting'&&d.robot=='offline'?'The robot is offline: your request waits.':(m.note||'');
+   if(m.seen)$('sub').textContent+=` 👁 ${m.seen}`;
    $('gotit').style.display=m.status=='arrived'?'':'none';
    $('gotit').textContent=m.action=='pickup'?'✔ LOADED, SEND IT ON':'✔ GOT IT, THANKS';
    $('cancel').style.display=open&&m.status!='arrived'?'':'none';

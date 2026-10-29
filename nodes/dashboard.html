@@ -83,6 +83,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 #fenceb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #erasefb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #amic.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
+#hazb.on{background:var(--warn);color:#140d04;border-color:var(--warn)}
 #pinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
 #unpinb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #movepinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
@@ -158,6 +159,8 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    <button id="unpinb" onclick="unpinBtn()" title="then tap a pin on the map to delete it">✕ REMOVE PIN</button>
    <button onclick="whosThere()" title="face-identify who is at the robot now (use when loading a parcel). Logs only — never blocks a delivery.">👤 WHO'S THERE</button>
    <button onclick="cmdFromMission()" title="give the robot a spoken or typed command (opens QUEUE & PLACES)">🎤 COMMAND</button>
+   <button onclick="whatSee()" title="one look through the mast camera: Claude describes the scene (a cent or two)">👁 WHAT DO YOU SEE?</button>
+   <button id="hazb" onclick="toggleHazard()" title="while Nav2 drives: a look every 3 s for things the lidar can't see (low objects, overhangs, glass); slows the robot briefly. Advisory only.">⚠ HAZARD SPOTTER</button>
    <small id="fit"></small>
   </div>
  </div>
@@ -598,8 +601,18 @@ function aListen(){
  aRec.start()}
 function aClear(){aPlan=null;document.getElementById('aplan').style.display='none'}
 const aDo={pickup:'collect at',deliver:'deliver to',go:'go to'};
+// vision: one look on demand, and the hazard spotter switch
+const SEE_RE=/\b(what (do|can) you see|what'?s (around|in front of) you|describe (the )?(scene|surroundings|view))\b/i;
+async function whatSee(spoken){log('vision: looking…');
+ let r;try{r=await(await post('/api/vision/describe',{device:aDev})).json()}catch(e){r={ok:false,error:'no answer'}}
+ if(!r.ok){log('vision: '+(r.error||'no answer'));return}
+ log('👁 '+r.text);if(spoken&&window.speechSynthesis)try{speechSynthesis.speak(new SpeechSynthesisUtterance(r.text))}catch(e){}
+ return r.text}
+async function toggleHazard(){const on=!(S.vision&&S.vision.hazard_on);
+ const r=await(await post('/api/vision/hazard',{on})).json();log('hazard spotter '+(r.on?'ON':'OFF'))}
 async function aSend(voice){
  const text=document.getElementById('acmdtext').value.trim();aClear();if(!text)return;aSpoken=!!voice;
+ if(SEE_RE.test(text)){aMsg('looking…');const t=await whatSee(voice);aMsg(t?'👁 '+t:'no answer');return}
  aMsg('thinking…');
  let r;try{r=await(await post('/api/command/parse',{text,name:'admin',device:aDev})).json()}catch(e){r={ok:false,error:'no answer'}}
  if(!r.ok){aMsg(r.error,'bad');return}
@@ -693,6 +706,12 @@ function renderReady(s){
      s.pose?'robot is localized':'robot does not know where it is — SET POSE / RESET POSE');
  add(s.cam_ok?'ok':'bad','Cam',s.cam_ok?'live':'off',
      s.cam_ok?'camera streaming':'no camera frames in the last 3 s');
+ const v=s.vision||{}, cm=s.commands||{};
+ if(!cm.key)add('warn','Vision','no key','no Anthropic API key: voice commands and vision are off');
+ else if(v.last_hazard)add('warn','Vision','⚠ '+v.last_hazard.text.slice(0,28),
+   `hazard ahead: ${v.last_hazard.text}`+(v.slowed?` — slowed to ${v.last_hazard.pct}%`:''));
+ else add('ok','Vision',`${v.hazard_on?'spotter on':'spotter off'} · ${v.calls_today||0} looks · ~$${(v.cost_today||0).toFixed(2)}`,
+   `hazard spotter ${v.hazard_on?'ON':'OFF'} · today ${v.calls_today||0}/${v.cap} looks · ~$${(v.cost_today||0).toFixed(2)} (Claude, estimate)`);
  const f=s.face||{};
  if(f.ok&&f.available)add('ok','Face',(f.enrolled||0)+' enrolled','face service up, 2nd camera ready');
  else if(f.ok)add('warn','Face','no cam','face service up but no /dev/face_cam (deliveries still work)');
@@ -719,7 +738,7 @@ function renderReady(s){
  vb.textContent=worst=='ok'?'✓ READY':worst=='warn'?'● CHECK':'✕ NOT READY';
  document.getElementById('rdchips').innerHTML=C.join('');
 }
-let lastJob='',mapMode=false;
+let lastJob='',lastFit='',mapMode=false;
 setInterval(async()=>{try{
  const rs=await fetch('/api/state');if(rs.status==401){location.href='/login';return}
  const s=await rs.json();S=s;M=s.map;renderQueue(s);renderReady(s);
@@ -731,6 +750,8 @@ setInterval(async()=>{try{
  document.getElementById('fit').textContent=s.fit||'';
  if(s.nav!=lastNav){log('nav: '+s.nav);lastNav=s.nav}
  if(s.job&&s.job!=lastJob){log(s.job);lastJob=s.job}
+ if(s.fit&&s.fit!=lastFit){log(s.fit);lastFit=s.fit}      // queue + vision events (hazards, blocked, arrivals)
+ document.getElementById('hazb').classList.toggle('on',!!(s.vision&&s.vision.hazard_on));
  document.getElementById('fit').textContent=s.job||s.fit||'';
  const sel=document.getElementById('mapsel');
  const mapsNow=JSON.stringify(s.maps||[]);

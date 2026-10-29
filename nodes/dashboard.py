@@ -107,7 +107,35 @@ class Ros(Node):
             self.cam_jpg = bytes(m.data)
             self.cam_t = time.time()
         self.create_subscription(CompressedImage, '/camera/image/compressed', on_img, qos_profile_sensor_data)
+        # clean 960 px frame at 1 Hz for the vision features (camera_node only encodes it while subscribed)
+        self.snap_jpg, self.snap_t = None, 0.0
+
+        def on_snap(m):
+            self.snap_jpg, self.snap_t = bytes(m.data), time.time()
+        self.create_subscription(CompressedImage, '/camera/snapshot/compressed', on_snap, qos_profile_sensor_data)
+        # Nav2's own speed-limit channel (controller_server listens on `speed_limit`): the hazard spotter
+        # slows the robot through it; 0.0 = no limit
+        from nav2_msgs.msg import SpeedLimit
+        self._SpeedLimit = SpeedLimit
+        self.pub_speed = self.create_publisher(SpeedLimit, 'speed_limit', 10)
         self.create_subscription(GoalStatusArray, '/navigate_to_pose/_action/status', self.on_status, 10)
+
+    def snapshot(self, max_age=3.0):
+        """Newest camera frame for vision: the clean snapshot, else the (smaller, tag-annotated) preview."""
+        now = time.time()
+        if self.snap_jpg and now - self.snap_t < max_age:
+            return self.snap_jpg
+        if self.cam_jpg and now - self.cam_t < max_age:
+            return self.cam_jpg
+        return None
+
+    def set_speed_limit(self, percent=None):
+        """Limit the Nav2 controller to `percent` % of its max speed; None lifts the limit."""
+        m = self._SpeedLimit()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.percentage = True
+        m.speed_limit = float(percent) if percent else 0.0
+        self.pub_speed.publish(m)
 
     def on_plan(self, msg):
         self.plan = [(p.pose.position.x, p.pose.position.y) for p in msg.poses[::3]]
@@ -298,6 +326,120 @@ def command_health():
         _cmdh['h'] = {'ok': bool(h.get('ok')), 'key': bool(h.get('key_configured')), 'model': h.get('model')}
         _cmdh['t'] = time.time()
     return _cmdh['h']
+
+
+VISION_DAILY_CAP = int(os.environ.get('VISION_DAILY_CAP', '1500'))    # looks/day, all vision features
+HAZARD_EVERY = float(os.environ.get('HAZARD_EVERY', '3'))             # s between looks while driving
+HAZARD_SLOW_PCT = float(os.environ.get('HAZARD_SLOW_PCT', '40'))      # % of max speed near a hazard
+HAZARD_SLOW_S = float(os.environ.get('HAZARD_SLOW_S', '8'))           # s it stays slow after a sighting
+HAZARD_OFF_FILE = os.path.expanduser('~/.campus_bot/run/hazard_off')  # exists = spotter switched off
+PRICE_IN, PRICE_OUT = 4e-6, 20e-6        # Claude Opus 5.5 $ per token, for the dashboard's cost estimate
+
+
+class Vision:
+    """The mast camera + Claude (nodes/command_service.py) for SLOW navigation decisions:
+    - hazard spotter: while Nav2 drives, one look every HAZARD_EVERY s for things the 2D lidar misses
+      (low floor objects, overhangs, glass); on a medium/high one, Nav2's speed limit drops for a few
+      seconds. Advisory only: an answer takes seconds, so it never steers or stops the robot; collision
+      safety stays with the lidar, bumper and the 300 ms watchdog. A wrong answer = briefly slower.
+    - ask(): one look for fleet ('blocked', 'arrival') and the WHAT DO YOU SEE button ('describe').
+    Budget: VISION_DAILY_CAP looks a day across all of it; cost is estimated from the token usage."""
+
+    def __init__(self, ros, log):
+        self.ros, self.log = ros, log
+        self.lock = threading.Lock()
+        self.day, self.calls, self.cost = '', 0, 0.0
+        self.last_hazard, self.limited, self.slow_until, self.inflight = None, False, 0.0, False
+        self.logged = {}
+        threading.Thread(target=self._hazard_loop, daemon=True).start()
+
+    @staticmethod
+    def hazard_on():
+        return not os.path.exists(HAZARD_OFF_FILE)
+
+    def set_hazard(self, on):
+        if on:
+            try:
+                os.remove(HAZARD_OFF_FILE)
+            except OSError:
+                pass
+        else:
+            os.makedirs(os.path.dirname(HAZARD_OFF_FILE), exist_ok=True)
+            open(HAZARD_OFF_FILE, 'w').close()
+            if self.limited:
+                self.ros.set_speed_limit(None)
+                self.limited = False
+
+    def _spend(self):
+        with self.lock:
+            today = time.strftime('%F')
+            if self.day != today:
+                self.day, self.calls, self.cost = today, 0, 0.0
+            if self.calls >= VISION_DAILY_CAP:
+                return False
+            self.calls += 1
+            return True
+
+    def ask(self, mode, context=None, timeout=45):
+        """One look through the camera: (result dict, None) or (None, why). Never raises."""
+        jpg = self.ros.snapshot()
+        if jpg is None:
+            return None, 'no camera frame (is the mast camera running?)'
+        if not command_health().get('key'):
+            return None, 'no Anthropic API key'
+        if not self._spend():
+            return None, f'today\'s vision limit ({VISION_DAILY_CAP} looks) is used up'
+        r = command_client.vision(mode, jpg, context, timeout=timeout)
+        u = r.get('usage') or {}
+        with self.lock:
+            self.cost += u.get('in', 0) * PRICE_IN + u.get('out', 0) * PRICE_OUT
+        return (r['result'], None) if r.get('ok') else (None, r.get('error'))
+
+    def status(self):
+        lh = self.last_hazard
+        return {'hazard_on': self.hazard_on(), 'calls_today': self.calls, 'cap': VISION_DAILY_CAP,
+                'cost_today': round(self.cost, 2), 'slowed': self.limited,
+                'last_hazard': lh if lh and time.time() - lh['t'] < 120 else None}
+
+    def _hazard_loop(self):
+        last = 0.0
+        while True:
+            time.sleep(0.5)
+            try:
+                now = time.time()
+                if self.limited and now > self.slow_until:
+                    self.ros.set_speed_limit(None)
+                    self.limited = False
+                    self.log('hazard spotter: back to normal speed')
+                if (self.ros.nav_state != 'DRIVING' or not self.hazard_on() or self.inflight
+                        or now - last < HAZARD_EVERY or not command_health().get('key')):
+                    continue
+                last, self.inflight = now, True
+                threading.Thread(target=self._check, daemon=True).start()
+            except Exception as e:
+                self.inflight = False
+                self.log(f'hazard spotter error: {e}')
+
+    def _check(self):
+        try:
+            res, _err = self.ask('hazard', {'state': 'driving autonomously to a goal'}, timeout=20)
+            if not res or self.ros.nav_state != 'DRIVING':
+                return
+            hz = [h for h in res.get('hazards', [])
+                  if h.get('severity') in ('medium', 'high') and h.get('distance') != 'over_3m']
+            if not hz:
+                return
+            pct = 25.0 if any(h['severity'] == 'high' for h in hz) else HAZARD_SLOW_PCT
+            self.ros.set_speed_limit(pct)
+            self.limited, self.slow_until = True, time.time() + HAZARD_SLOW_S
+            text = '; '.join(f"{h['what']} ({h['distance'].replace('_', ' ')}, {h['where'].replace('_', ' ')})"
+                             for h in hz)
+            self.last_hazard = {'text': text, 't': time.time(), 'pct': pct}
+            if time.time() - self.logged.get(text.lower(), 0) > 20:
+                self.logged[text.lower()] = time.time()
+                self.log(f'⚠ hazard ahead: {text} → slowing to {pct:.0f}%')
+        finally:
+            self.inflight = False
 
 
 def face_identify(where='check', job=None):
@@ -561,6 +703,7 @@ class Handler(BaseHTTPRequestHandler):
     state = None
     auth = None
     queue = None
+    vision = None
 
     def log_message(self, *a):
         pass
@@ -738,7 +881,7 @@ class Handler(BaseHTTPRequestHandler):
                          'h': shape[0], 'w': shape[1]},
                  'places': fleet.load_places(AREA), 'queue': self.queue.admin_view(),
                  'cam_ok': self.ros.cam_jpg is not None and time.time() - self.ros.cam_t < 3.0,
-                 'face': face_health(), 'commands': command_health(), **s}
+                 'face': face_health(), 'commands': command_health(), 'vision': self.vision.status(), **s}
             self.send(200, 'application/json', json.dumps(d).encode())
         elif self.path.startswith('/api/logs'):
             name = (self.path.split('f=')[1].split('&')[0] if 'f=' in self.path else 'nav')
@@ -817,6 +960,19 @@ class Handler(BaseHTTPRequestHandler):
             self.json({'ok': job is not None, 'msg': msg,
                        **({'id': job['id'], 'token': job['token']} if job else {})})
             return
+        if self.path == '/api/vision/describe':       # "what do you see?" (button or voice), one look
+            why = self.command_allowed(str(body.get('device') or ''), self.is_admin())
+            if why:
+                self.json({'ok': False, 'error': why})
+                return
+            res, err = self.vision.ask('describe', {'asked by': 'the operator' if self.is_admin() else 'someone'})
+            text = (f"{res['description']}" + (f" In the way: {res['in_the_way']}." if res.get('in_the_way')
+                                                and res['in_the_way'].lower() not in ('nothing', 'none') else '')
+                    ) if res else None
+            if text:
+                print(time.strftime('%H:%M:%S'), 'vision: sees:', text, flush=True)
+            self.json({'ok': bool(res), 'text': text, 'error': err})
+            return
         if self.path == '/api/trip/confirm':          # LOADED / GOT IT at the current stop of a trip
             ok, msg = self.queue.confirm(body.get('id'), token=body.get('token'), admin=self.is_admin(),
                                          who=body.get('who'))
@@ -833,6 +989,11 @@ class Handler(BaseHTTPRequestHandler):
             self.queue.admin_took_control(TAKES_CONTROL[self.path])
         if self.path in ('/api/use_map', '/api/map_start'):
             self.queue.clear('map changed: open requests cancelled (places belong to the old map)', go_home=False)
+        if self.path == '/api/vision/hazard':          # hazard spotter on/off (admin)
+            self.vision.set_hazard(bool(body.get('on')))
+            self.state.fit_msg = f'hazard spotter {"ON" if self.vision.hazard_on() else "OFF"}'
+            self.json({'ok': True, 'on': self.vision.hazard_on()})
+            return
         if self.path == '/api/face/identify':
             # on-demand "who's at the crate" — used when loading a parcel (pickup). Log only.
             r = face_client.identify()
@@ -1145,10 +1306,12 @@ def main():
         print(time.strftime('%H:%M:%S'), m, flush=True)
         Handler.state.fit_msg = m
 
+    Handler.vision = Vision(ros, qlog)
     Handler.queue = fleet.Queue(ros, nav, lambda: AREA, lambda: get_home(AREA),
                                 lambda: ros.pose() is not None and not pid_alive('slam'), qlog,
                                 snap_fn=lambda x, y: snap_reachable(ros, x, y) or snap_goal(x, y),
-                                face_fn=face_identify)
+                                face_fn=face_identify,
+                                vision_fn=lambda mode, ctx: Handler.vision.ask(mode, ctx))
     if not fleet.Auth.configured():
         print('no admin password yet: python3 tools/set_admin_password.py (the call page works anyway)',
               flush=True)

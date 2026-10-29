@@ -47,6 +47,11 @@ class CameraNode(Node):
         # so the preview only adds a resize + small JPEG per frame (2026-10-10)
         preview_hz = float(self.declare_parameter('preview_hz', 8.0).value)
         self.preview_width = int(self.declare_parameter('preview_width', 480).value)
+        # A clean (no tag overlay), larger still for the vision features (hazard spotter, blocked / arrival
+        # checks, "what do you see": nodes/dashboard.py -> nodes/command_service.py). 1 Hz, only encoded
+        # while someone subscribes; reuses the frame already decoded for detection (2026-10-29).
+        snapshot_hz = float(self.declare_parameter('snapshot_hz', 1.0).value)
+        self.snapshot_width = int(self.declare_parameter('snapshot_width', 960).value)
         # Capture → read latency of the MJPG pipeline; the stamp is moved back by this much.
         self.latency = float(self.declare_parameter('latency', 0.05).value)
 
@@ -61,6 +66,7 @@ class CameraNode(Node):
         self.pub_tags = self.create_publisher(Detection3DArray, '/tags', 10)
         self.pub_img = self.create_publisher(CompressedImage, '/camera/image/compressed', qos_profile_sensor_data)
         self.pub_info = self.create_publisher(CameraInfo, '/camera/camera_info', qos_profile_sensor_data)
+        self.pub_snap = self.create_publisher(CompressedImage, '/camera/snapshot/compressed', qos_profile_sensor_data)
 
         self.lock = threading.Lock()
         self.frame = None          # (seq, stamp_msg, bgr)
@@ -75,6 +81,7 @@ class CameraNode(Node):
         self.thread.start()
         self.create_timer(1.0 / detect_hz, self.detect)
         self.create_timer(1.0 / preview_hz, self.preview)
+        self.create_timer(1.0 / snapshot_hz, self.snapshot)
         self.create_timer(30.0, self.report)
 
     # ---------------------------------------------------------------- capture thread
@@ -167,6 +174,27 @@ class CameraNode(Node):
         self.stats['tags'] += len(out.detections)
 
     # ---------------------------------------------------------------- preview
+    def snapshot(self):
+        """The current frame without overlays, snapshot_width wide, for the vision features."""
+        if self.pub_snap.get_subscription_count() == 0:
+            return
+        with self.lock:
+            if self.frame is None:
+                return
+            _, stamp, img = self.frame
+        s = min(1.0, self.snapshot_width / float(img.shape[1]))
+        out = cv2.resize(img, (int(img.shape[1] * s), int(round(img.shape[0] * s))),
+                         interpolation=cv2.INTER_AREA) if s < 1.0 else img
+        ok, jpg = cv2.imencode('.jpg', out, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if not ok:
+            return
+        msg = CompressedImage()
+        msg.header.stamp = stamp
+        msg.header.frame_id = self.frame_id
+        msg.format = 'jpeg'
+        msg.data = jpg.tobytes()
+        self.pub_snap.publish(msg)
+
     def preview(self):
         if self.pub_img.get_subscription_count() == 0 and self.pub_info.get_subscription_count() == 0:
             return
