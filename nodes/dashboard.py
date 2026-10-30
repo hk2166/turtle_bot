@@ -119,6 +119,18 @@ class Ros(Node):
         self._SpeedLimit = SpeedLimit
         self.pub_speed = self.create_publisher(SpeedLimit, 'speed_limit', 10)
         self.create_subscription(GoalStatusArray, '/navigate_to_pose/_action/status', self.on_status, 10)
+        # Cancel every Nav2 goal (the slip watcher's stop): stop() can't be used there, because it sends a
+        # "come to where you are" goal and during a slip "where you are" is the drifted, wrong pose.
+        from action_msgs.srv import CancelGoal
+        self._CancelGoal = CancelGoal
+        self.cancel_cli = self.create_client(CancelGoal, '/navigate_to_pose/_action/cancel_goal')
+
+    def cancel_all_goals(self):
+        if not self.cancel_cli.service_is_ready():
+            return False
+        self.cancel_cli.call_async(self._CancelGoal.Request())   # zero goal id + stamp = every goal
+        self.goal = None
+        return True
 
     def snapshot(self, max_age=3.0):
         """Newest camera frame for vision: the clean snapshot, else the (smaller, tag-annotated) preview."""
@@ -1223,6 +1235,45 @@ class Handler(BaseHTTPRequestHandler):
             msg = self.ros.reload_map(os.path.join(PROJECT, 'maps', f'{AREA}_fenced.yaml'))
             self.state.fit_msg = f'{len(lines)} fence segment(s) — {msg}'
             self.send(200, 'application/json', b'{"ok":true}')
+        elif self.path == '/api/stuck':
+            # nodes/slip_watch.py: the steps say the robot is driving but the lidar says it isn't (pushing
+            # against something below the scan plane, or wheel slip). Stop the push, then put the pose back
+            # where the robot really is, before AMCL follows the step count off the map.
+            try:
+                x, y, yaw = float(body['x']), float(body['y']), float(body['yaw'])
+            except (KeyError, TypeError, ValueError):
+                self.send(400, 'text/plain', b'x, y, yaw required')
+                return
+            claimed = max(0.0, float(body.get('claimed') or 0.3))
+            what = str(body.get('what') or 'pushing against something the lidar can\'t see')[:120]
+            in_queue = self.queue.blocked_now(f'stuck: {what}')
+            self.ros.cancel_all_goals()
+            for _ in range(3):
+                self.ros.pub_stop.publish(Twist())
+
+            def refit():
+                radius = min(1.5, max(0.5, claimed + 0.3))      # cover however far the steps claimed
+                r = subprocess.run(['python3', os.path.join(PROJECT, 'tools', 'fit_pose.py'),
+                                    f'{x:.3f}', f'{y:.3f}', f'{math.degrees(yaw):.1f}',
+                                    '--radius', f'{radius:.2f}', '--angle', '30'],
+                                   capture_output=True, text=True)
+                try:
+                    fx, fy, fyaw, score = (float(v) for v in r.stdout.split())
+                except ValueError:
+                    fx = fy = fyaw = None
+                    score = 0.0
+                if fx is not None and score >= 0.5:
+                    self.ros.send_pose(fx, fy, fyaw)
+                    how = f'pose re-fitted to the walls ({score:.0%})'
+                else:                                  # the lidar said it didn't move: last good pose
+                    self.ros.send_pose(x, y, yaw)
+                    how = 'pose put back where it got stuck (no confident fit)'
+                msg = (f'⚠ stuck: {what}. The wheels claimed {claimed:.2f} m the lidar didn\'t see; '
+                       f'{"trip will retry" if in_queue else "goal cancelled"}, {how}')
+                self.state.fit_msg = msg[:200]
+                print(time.strftime('%H:%M:%S'), msg, flush=True)
+            threading.Thread(target=refit, daemon=True).start()
+            self.json({'ok': True, 'queue': in_queue})
         elif self.path == '/api/fit':
             mode = body.get('mode', 'start')
             pose_now = self.ros.pose()

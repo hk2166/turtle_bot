@@ -323,6 +323,11 @@ if (( NAV )); then
     start_bg unstick python3 nodes/unstick.py
     ok "wedge escape on: lidar-guided nudge out of tight spots during a goal (UNSTICK=0 disables)"
   fi
+  if [[ "${SLIP_WATCH:-1}" == 1 ]]; then
+    stop_bg slip_watch >/dev/null
+    start_bg slip_watch python3 nodes/slip_watch.py
+    ok "slip watch on: wheels claim motion the lidar doesn't see -> stop, re-fit the pose, mark the spot (SLIP_WATCH=0 disables)"
+  fi
   stop_bg pose_keeper >/dev/null
   start_bg pose_keeper python3 nodes/pose_keeper.py --ros-args -p map:="$AREA"
   # After a reboot: the pose saved while driving, accepted only if the live scan fits the map there

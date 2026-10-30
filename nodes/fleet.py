@@ -443,6 +443,34 @@ class Queue:
             self._save()
             return True, what
 
+    def _blocked(self, active, what):
+        """This attempt couldn't get through: retry later (TRIP_TRIES in all), and ask the camera what is in
+        the way, which can shorten the wait (a person), lengthen it (a chair) or end the trip (a door)."""
+        active['tries'] = active.get('tries', 0) + 1
+        if active['tries'] < TRIP_TRIES:
+            active['status'], active['started'] = 'waiting', None
+            active['not_before'] = time.time() + RETRY_DELAY
+            active['note'] = f'{what}: retry {active["tries"] + 1}/{TRIP_TRIES}'
+            self.log(f'queue: {what} on the way to {active["place_name"]}: retrying in '
+                     f'{int(RETRY_DELAY)} s (try {active["tries"] + 1}/{TRIP_TRIES})')
+        else:
+            self._finish(active, 'failed', f"couldn't reach the place in {TRIP_TRIES} tries ({what})")
+            self.log(f'queue: trip to {active["place_name"]} for {active["name"]} failed '
+                     f'after {TRIP_TRIES} tries')
+        self._vision_async('blocked', active)
+
+    def blocked_now(self, what):
+        """The slip watcher (nodes/slip_watch.py) saw the robot pushing against something Nav2 can't see:
+        stop this attempt now and handle it like a blocked path. False when no queue trip is driving."""
+        with self.lock:
+            active = next((j for j in self.jobs if j['status'] == 'driving'), None)
+            if active is None:
+                return False
+            self.nav.cancel()
+            self._blocked(active, what)
+            self._save()
+            return True
+
     def _vision_async(self, kind, job):
         """kind 'blocked': look at what is in the way and set how long to wait (a person moves in seconds, a
         chair needs someone, a closed door ends the trip). kind 'arrival': note whether anyone is there.
@@ -604,20 +632,8 @@ class Queue:
                     active['seen'] = ''
                     self._vision_async('arrival', active)     # is anyone there? (shown on the call page)
                 elif r in ('aborted', 'rejected'):
-                    active['tries'] = active.get('tries', 0) + 1
-                    if active['tries'] < TRIP_TRIES:
-                        active['status'] = 'waiting'
-                        active['not_before'] = time.time() + RETRY_DELAY
-                        active['note'] = f'path blocked: retry {active["tries"] + 1}/{TRIP_TRIES}'
-                        self.log(f'queue: path to {active["place_name"]} blocked: retrying in '
-                                 f'{int(RETRY_DELAY)} s (try {active["tries"] + 1}/{TRIP_TRIES})')
-                    else:
-                        self._finish(active, 'failed',
-                                     f"couldn't reach the place in {TRIP_TRIES} tries (blocked)")
-                        self.log(f'queue: trip to {active["place_name"]} for {active["name"]} failed '
-                                 f'after {TRIP_TRIES} tries')
+                    self._blocked(active, 'path blocked')
                     self._save()
-                    self._vision_async('blocked', active)    # what is in the way? (sets the wait / reason)
                 elif r == 'canceled':      # someone else (RViz, a script) took the robot: back in line, paused
                     active['status'], active['started'] = 'waiting', None
                     self.paused = True

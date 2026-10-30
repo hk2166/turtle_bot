@@ -9,7 +9,10 @@ amcl:
     # spreading onto the identical neighbouring desk rows (sudden pose jumps)
     alpha1: 0.08
     alpha2: 0.08
-    alpha3: 0.08
+    # 2026-10-30: 0.08 -> 0.12, translation only. The distance comes from counted steps, which keep counting
+    # when the wheels slip or the robot pushes against something: a little more spread lets the lidar pull the
+    # pose back. Kept small because of the desk rows above; nodes/slip_watch.py handles real pushes.
+    alpha3: 0.12
     alpha4: 0.08
     alpha5: 0.08
     base_frame_id: "base_link"
@@ -168,7 +171,7 @@ local_costmap:
         z_voxels: 16
         max_obstacle_height: 2.0
         mark_threshold: 0
-        observation_sources: scan
+        observation_sources: scan stuck
         scan:
           topic: /scan_filtered
           max_obstacle_height: 2.0
@@ -178,6 +181,17 @@ local_costmap:
           raytrace_max_range: 3.0
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+        # Where the robot got stuck on something the lidar can't see (nodes/slip_watch.py, map frame, 8 cm
+        # up). Marking only; the points are measured from the map origin, hence the long max range.
+        stuck:
+          topic: /stuck_obstacles
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: 0.0
+          max_obstacle_height: 2.0
+          obstacle_max_range: 100.0
           obstacle_min_range: 0.0
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -201,7 +215,7 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        observation_sources: scan
+        observation_sources: scan stuck
         scan:
           topic: /scan_filtered
           max_obstacle_height: 2.0
@@ -213,6 +227,17 @@ global_costmap:
           raytrace_max_range: 5.0
           raytrace_min_range: 0.0
           obstacle_max_range: 4.0
+          obstacle_min_range: 0.0
+        # Where the robot got stuck on something the lidar can't see (nodes/slip_watch.py): the global
+        # planner routes the retry around it. Expires when slip_watch publishes an empty cloud.
+        stuck:
+          topic: /stuck_obstacles
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: 0.0
+          max_obstacle_height: 2.0
+          obstacle_max_range: 100.0
           obstacle_min_range: 0.0
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
