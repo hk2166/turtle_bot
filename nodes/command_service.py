@@ -50,6 +50,10 @@ Rules:
 - "take / get / collect / pick up X from A" is a pickup at A. "give / deliver / drop / bring / take X to
   B" is a deliver at B. Taking something from someone and bringing it to someone else is a pickup
   followed by a deliver.
+- Places also have a NUMBER: the label on its pin on the dashboard map (pin 1, 2, 3, ...). "point 3",
+  "pin 3", "number three", "location 3", "spot 3", "go to 3", "deliver it to five" all mean the place with
+  that number (speech recognition may write the number as a word or a digit, or as "to" for "two" /
+  "for" for "four" only when nothing else fits). A number with no place behind it: ask.
 - "me", "my desk", "here" mean the requester's place when it is given; if it is not given, ask.
 - The text comes from speech recognition: names may be misspelled or sound-alike ("Babneet" for
   "Babneek", "Rahul's office" for "Rahul Sir Office"). Map them to the closest place when you are
@@ -144,10 +148,10 @@ def parse(text, places, requester=None):
         return {'ok': False, 'error': f'no Anthropic API key: put it in {KEY_FILE}'}
     places = [{'id': str(p['id']), 'name': str(p['name'])} for p in places]
     req = requester or {}
-    lines = '\n'.join(f'- {p["id"]}: {p["name"]}' for p in places)
+    lines = '\n'.join(f'- pin {i}: id {p["id"]}: {p["name"]}' for i, p in enumerate(places, 1))
     who = req.get('name') or 'unknown'
     here = next((p['name'] for p in places if p['id'] == req.get('place_id')), None)
-    user = (f'Places on this floor (id: name):\n{lines}\n\n'
+    user = (f'Places on this floor (pin number on the map, id, name):\n{lines}\n\n'
             f'Requester: {who}; requester\'s place: {here or "not given"}\n\n'
             f'Command: {text}')
     try:
@@ -190,6 +194,7 @@ def parse(text, places, requester=None):
     names = {p['id']: p['name'] for p in places}
     for leg in plan['legs']:
         leg['place_name'] = names[leg['place_id']]
+        leg['pin'] = [p['id'] for p in places].index(leg['place_id']) + 1
     return {'ok': True, 'plan': plan, 'model': resp.model, 'ms': int((time.time() - t0) * 1000),
             'request_id': getattr(resp, '_request_id', None)}
 

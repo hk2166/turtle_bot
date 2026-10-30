@@ -696,7 +696,7 @@ async function aSend(voice){
  if(!r.plan.understood){aMsg('🤔 '+r.plan.question,'bad');aSay(r.plan.question);return}
  aPlan={plan:r.plan,text};aMsg(`understood in ${(r.ms/1000).toFixed(1)} s`);
  document.getElementById('aplansum').textContent=r.plan.summary;const ol=document.getElementById('aplanlegs');ol.textContent='';
- r.plan.legs.forEach(l=>ol.appendChild(mk('li',`${aDo[l.action]} ${l.place_name}`+(l.note?` — ${l.note}`:''))));
+ r.plan.legs.forEach(l=>ol.appendChild(mk('li',`${aDo[l.action]} ${l.pin?'📍'+l.pin+' · ':''}${l.place_name}`+(l.note?` — ${l.note}`:''))));
  document.getElementById('aplan').style.display='block';aSay(r.plan.summary)}
 function aSay(t){if(aSpoken&&window.speechSynthesis&&t){try{speechSynthesis.speak(new SpeechSynthesisUtterance(t))}catch(e){}}}
 async function aRun(){

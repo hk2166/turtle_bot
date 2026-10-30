@@ -131,7 +131,7 @@ async function api(u,b){const r=await fetch(u,b?{method:'POST',body:JSON.stringi
 async function loadPlaces(){
  try{const d=await api('/api/places');const box=$('places');box.textContent='';
   if(!d.places.length){box.textContent='No places pinned yet: ask the admin to pin some.';return}
-  d.places.forEach(p=>{const b=el('button','→ '+p.name);b.onclick=()=>call(p.id,p.name);box.appendChild(b)})}
+  d.places.forEach((p,i)=>{const b=el('button',`→ ${i+1} · ${p.name}`);b.onclick=()=>call(p.id,p.name);box.appendChild(b)})}
  catch(_){$('places').textContent='robot not reachable'}}
 async function call(pid,pname){
  const name=nameEl.value.trim();$('err').textContent='';
@@ -214,7 +214,7 @@ async function sendCmd(viaVoice){
  if(!r.plan.understood){$('cmdmsg').textContent='🤔 '+r.plan.question;$('cmdmsg').className='warn';say(r.plan.question);return}
  plan={plan:r.plan,text};$('cmdmsg').textContent='';
  $('plansum').textContent=r.plan.summary;const ol=$('planlegs');ol.textContent='';
- r.plan.legs.forEach(l=>ol.appendChild(el('li',`${DO[l.action]} ${l.place_name}`+(l.note?` — ${l.note}`:''))));
+ r.plan.legs.forEach(l=>ol.appendChild(el('li',`${DO[l.action]} ${l.pin?'📍'+l.pin+' · ':''}${l.place_name}`+(l.note?` — ${l.note}`:''))));
  $('plan').style.display='block';say(r.plan.summary+' Tap confirm to go.')}
 function say(t){if(spoken&&window.speechSynthesis&&t){try{speechSynthesis.speak(new SpeechSynthesisUtterance(t))}catch(_){}}}
 async function runCmd(){
