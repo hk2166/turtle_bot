@@ -5,6 +5,8 @@
     - 12 recovery rounds before the goal fails (stock 6)
     - plans with "Straight" (Theta*, straight lines where the floor is clear) and falls back to the
       selected planner (GridBased / NavFn) when that fails (2026-10-30)
+    - smooths each new plan (smoother_server simple_smoother, collision-checked; the raw plan is kept
+      if smoothing fails) to take the kinks out of aisle paths (2026-10-30)
     - recoveries in the order that frees this robot at a tight corner: clear the costmaps, back up
       0.25 m, wait 3 s (people walk off), then spin 90° (stock: clear, spin, wait 5 s, back up 0.30 m)
   Replanning at 1 Hz and the per-step clears are unchanged. Every recovery still checks collisions.
@@ -16,16 +18,22 @@
         <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
         <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
         <RateController hz="1.0">
-          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-            <Fallback name="StraightElseGrid">
-              <ComputePathToPose goal="{goal}" path="{path}" planner_id="Straight" error_code_id="{compute_path_error_code}"/>
-              <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+          <Sequence name="PlanThenSmooth">
+            <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+              <Fallback name="StraightElseGrid">
+                <ComputePathToPose goal="{goal}" path="{path}" planner_id="Straight" error_code_id="{compute_path_error_code}"/>
+                <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+              </Fallback>
+              <Sequence>
+                <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+                <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+              </Sequence>
+            </RecoveryNode>
+            <Fallback name="SmoothIfSafe">
+              <SmoothPath unsmoothed_path="{path}" smoothed_path="{path}" smoother_id="simple_smoother" max_smoothing_duration="0.5" check_for_collisions="true" error_code_id="{smoother_error_code}"/>
+              <AlwaysSuccess/>
             </Fallback>
-            <Sequence>
-              <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
-              <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
-            </Sequence>
-          </RecoveryNode>
+          </Sequence>
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPath">
           <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
