@@ -82,6 +82,13 @@ class Auth:
             self.sessions[token] = now + SESSION_S
         return token
 
+    def issue(self):
+        """A session without the password: the same-WiFi hand-off from an already logged-in page."""
+        token = secrets.token_urlsafe(32)
+        with self.lock:
+            self.sessions[token] = time.time() + SESSION_S
+        return token
+
     def logout(self, token):
         with self.lock:
             self.sessions.pop(token, None)

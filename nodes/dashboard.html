@@ -114,6 +114,9 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
  #pad{grid-template-columns:repeat(3,minmax(72px,88px))}
  #bar{font-size:12px;gap:2px 12px}
 }
+#netbar{display:none;flex:none;margin:0;padding:8px 10px;border:1px solid var(--fg);border-radius:6px;font-size:13px;line-height:2}
+#netbar button{width:auto;margin:0 6px;padding:4px 10px;font-size:12px}
+#netbar label{font-size:12px;white-space:nowrap}#netbar input{width:auto;margin:0 4px 0 0}
 </style></head><body>
 <h1>▚ CAMPUS BOT <span class="blink">▮</span>
  <button class="tab vtab on" onclick="setView('mission',this)">MISSION CONTROL</button>
@@ -121,6 +124,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
  <button class="tab vtab" onclick="setView('queue',this)">QUEUE &amp; PLACES <span id="qbadge"></span></button>
  <button class="tab" style="margin-left:auto" onclick="logout()">LOG OUT</button>
 </h1>
+<div id="netbar"></div>
 <div id="bar">
  <span><b>MAP</b>
   <select id="mapsel" onchange="void 0"></select>
@@ -787,6 +791,7 @@ function renderReady(s){
 let lastJob='',lastFit='',mapMode=false;
 setInterval(async()=>{try{
  const rs=await fetch('/api/state');if(rs.status==401){location.href='/login';return}
+ netOk(true);
  const s=await rs.json();S=s;M=s.map;renderQueue(s);renderReady(s);
  const el=(i,v)=>document.getElementById(i).textContent=v;
  el('nav',s.nav);el('power',s.power);el('wifi',s.wifi);el('temp',s.temp);
@@ -813,6 +818,31 @@ setInterval(async()=>{try{
   const im=new Image();im.onload=()=>{img.src=im.src;cv.width=im.width;cv.height=im.height;fitCanvas();draw()};
   im.src='/map.png?'+Date.now()}
  draw();
-}catch(e){document.getElementById('nav').textContent='PANEL OFFLINE?'}},700);
+}catch(e){document.getElementById('nav').textContent='PANEL OFFLINE?';netOk(false)}},700);
 setSrc(camSrc);
+// ---- same WiFi as the robot? (2026-10-30) On the internet link, offer the direct WiFi address (much
+// faster video) with a one-time pass so you stay logged in; on the direct page, offer the internet link
+// when the robot stops answering (you left the WiFi).
+const NB=document.getElementById('netbar');
+function nbShow(html){NB.innerHTML=html;NB.style.display=html?'':'none'}
+async function lanSwitch(lan){
+ try{const h=await(await fetch('/api/lan/handoff')).json();if(h.ok){location.href=h.url;return}}catch(e){}
+ location.href=lan+'/login'}
+function lanAuto(on){try{localStorage.setItem('autoLan',on?'1':'0')}catch(e){}}
+let REMOTE_URL='';
+(async()=>{let r;try{r=await(await fetch('/api/lan')).json()}catch(e){return}
+ if(r.direct){REMOTE_URL=r.remote||'';return}
+ if(!r.same||!r.lan)return;
+ const ok=await new Promise(res=>{const i=new Image(),t=setTimeout(()=>res(false),2500);
+  i.onload=()=>{clearTimeout(t);res(true)};i.onerror=()=>{clearTimeout(t);res(false)};i.src=r.lan+'/lan_ping.gif?t='+Date.now()});
+ let auto=false;try{auto=localStorage.getItem('autoLan')=='1'}catch(e){}
+ if(ok&&auto)return lanSwitch(r.lan);
+ nbShow(`📶 You're on the robot's WiFi: the direct connection is much faster.
+  <button onclick="lanSwitch('${r.lan}')">⚡ SWITCH TO DIRECT</button>
+  <label><input type="checkbox" onchange="lanAuto(this.checked)"${auto?' checked':''}> always</label>`+
+  (ok?'':`<br><small>first time: the browser warns about the robot's own certificate: choose Advanced → Proceed.</small>`))})();
+let nbFails=0;
+function netOk(good){                       // the direct page's poll reports in here
+ if(good){if(nbFails>=4)nbShow('');nbFails=0;return}
+ if(++nbFails==4&&REMOTE_URL)nbShow(`📡 Can't reach the robot on this WiFi. <button onclick="location.href='${REMOTE_URL}/admin'">🌐 OPEN THE INTERNET LINK</button>`)}
 </script></body></html>

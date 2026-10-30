@@ -9,8 +9,12 @@ the camera feed, power/WiFi/temperature/navigation status, and a STOP button.
 Navigation itself must be running (run/nav.sh); the panel only talks to it.
 The camera is opened only while someone is actually watching the feed, and released after.
 """
+import ipaddress
 import json
 import math
+import secrets
+import urllib.request
+from urllib.parse import parse_qs, urlparse
 import socket
 import os
 import subprocess
@@ -788,7 +792,62 @@ ENROLL_PORT = int(os.environ.get('ENROLL_PORT', '8443'))    # face/face_service.
 # and there NOTHING is open without the admin login (on the office WiFi the call page is open to all).
 # Tunnelled visitors arrive from 127.0.0.1, so this port must never get the "the robot itself" trust.
 REMOTE_PORT = int(os.environ.get('DASH_REMOTE_PORT', '8090'))
-REMOTE_OPEN = ('/login', '/api/login')
+REMOTE_OPEN = ('/login', '/api/login', '/api/lan')
+# ---- same WiFi? (2026-10-30) Someone on the internet link whose public address is the robot's own is
+# behind the same office router: the page offers the direct WiFi address (much faster video), with a
+# one-time pass so they stay logged in. The VPS's Traefik puts the visitor's address in X-Real-Ip.
+VPS_ENV = os.path.expanduser('~/.campus_bot/vps.env')
+NET = {'v4': '', 'v6': '', 'lan': '', 't': 0.0}
+HANDOFF = {}                     # one-time pass -> (admin session token, expiry)
+GIF = (b'GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00'
+       b',\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;')
+
+
+def remote_url():
+    try:
+        m = re.search(r'^VPS_URL=(\S+)', open(VPS_ENV).read(), re.M)
+        return m.group(1) if m else ''
+    except OSError:
+        return ''
+
+
+def lan_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 80))              # no packet is sent: just picks the outgoing interface
+        return s.getsockname()[0]
+    except OSError:
+        return ''
+    finally:
+        s.close()
+
+
+def public_ip_watch():
+    """The robot's own public addresses (they change: Airtel), refreshed every 5 min."""
+    while True:
+        for k, url in (('v4', 'https://api.ipify.org'), ('v6', 'https://api6.ipify.org')):
+            try:
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    NET[k] = r.read().decode().strip()[:64]
+            except Exception:
+                pass                            # keep the last known one
+        NET['lan'], NET['t'] = lan_ip(), time.time()
+        time.sleep(300)
+
+
+def same_network(ip):
+    ip = (ip or '').strip()
+    if ip.startswith('::ffff:'):
+        ip = ip[7:]
+    try:
+        a = ipaddress.ip_address(ip)
+        if a.version == 4:
+            return bool(NET['v4']) and ip == NET['v4']
+        return bool(NET['v6']) and ipaddress.ip_address(NET['v6']) in ipaddress.ip_network(f'{ip}/64', strict=False)
+    except ValueError:
+        return False
+
+
 PUBLIC_POST = ('/api/login', '/api/request', '/api/request/cancel', '/api/request/done')
 # admin actions that take the robot away from the queue (it pauses, a trip in progress goes back in front)
 TAKES_CONTROL = {'/api/goal': 'map goal', '/api/stop': 'STOP', '/api/drive': 'manual drive',
@@ -920,9 +979,51 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send(503, 'text/plain', err or b'warming up')
 
+    def client_ip(self):
+        """The visitor's real address: on the remote port the VPS's Traefik sets X-Real-Ip."""
+        if self.remote:
+            return self.headers.get('X-Real-Ip') or (self.headers.get('X-Forwarded-For') or '').split(',')[-1]
+        return self.client_address[0]
+
+    def lan_routes(self, route):
+        """Same-WiFi switching. True = answered."""
+        if route == '/api/lan':
+            if not self.remote:                 # already direct: tell the page where the internet link is
+                self.json({'direct': True, 'remote': remote_url()})
+            else:
+                same = same_network(self.client_ip()) and bool(NET['lan'])
+                self.json({'direct': False, 'same': same,
+                           'lan': f'https://{NET["lan"]}:{HTTPS_PORT}' if same else ''})
+            return True
+        if route == '/api/lan/handoff' and self.remote and self.is_admin():
+            if not (same_network(self.client_ip()) and NET['lan']):
+                self.json({'ok': False})
+                return True
+            now = time.time()
+            for k in [k for k, (_t, e) in HANDOFF.items() if e < now]:
+                HANDOFF.pop(k, None)
+            p = secrets.token_urlsafe(24)
+            HANDOFF[p] = (self.auth.issue(), now + 60)
+            self.json({'ok': True, 'url': f'https://{NET["lan"]}:{HTTPS_PORT}/handoff?t={p}'})
+            return True
+        if route == '/handoff' and not self.remote:
+            tok, exp = HANDOFF.pop(parse_qs(urlparse(self.path).query).get('t', [''])[0], ('', 0))
+            if tok and exp > time.time():
+                self.send(302, 'text/plain', b'admin', (('Location', '/admin'), ('Set-Cookie',
+                          f'cb_admin={tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age={fleet.SESSION_S}')))
+            else:
+                self.send(302, 'text/plain', b'login', (('Location', '/login'),))
+            return True
+        if route == '/lan_ping.gif' and not self.remote:   # "can this browser reach me directly?"
+            self.send(200, 'image/gif', GIF, (('Access-Control-Allow-Origin', '*'),))
+            return True
+        return False
+
     def do_GET(self):
         route = self.path.split('?')[0]
         if self.remote_gate(route, False):
+            return
+        if self.lan_routes(route):
             return
         if route in ('/', '/index.html', '/call'):
             self.send(200, 'text/html; charset=utf-8', CALL_PAGE)
@@ -1542,6 +1643,7 @@ def main():
         start_https()
     except Exception as e:                      # never let https trouble take the plain dashboard down
         print(f'https dashboard off: {e}', flush=True)
+    threading.Thread(target=public_ip_watch, daemon=True).start()
     try:
         rsrv = ThreadingHTTPServer(('127.0.0.1', REMOTE_PORT), type('RemoteHandler', (Handler,), {'remote': True}))
         rsrv.daemon_threads = True

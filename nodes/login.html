@@ -16,9 +16,13 @@ button{background:#0f1d0f;border:1px solid var(--fg);color:var(--fg);letter-spac
 button:hover{background:var(--fg);color:#04140a}
 #msg{color:var(--bad);min-height:1.5em;margin-top:10px;font-size:13px}
 a{color:var(--dim)}
+#netbar{display:none;flex:none;margin:0;padding:8px 10px;border:1px solid var(--fg);border-radius:6px;font-size:13px;line-height:2}
+#netbar button{width:auto;margin:0 6px;padding:4px 10px;font-size:12px}
+#netbar label{font-size:12px;white-space:nowrap}#netbar input{width:auto;margin:0 4px 0 0}
 </style></head><body>
 <form class="box" onsubmit="go(event)">
  <h1>▚ CAMPUS BOT · ADMIN</h1>
+ <div id="netbar"></div>
  <label for="pw" style="color:var(--dim);font-size:12px">ADMIN PASSWORD</label>
  <input id="pw" type="password" autocomplete="current-password" autofocus>
  <button type="submit">LOG IN</button>
@@ -29,4 +33,25 @@ a{color:var(--dim)}
 async function go(e){e.preventDefault();const m=document.getElementById('msg');m.textContent='checking…';
  try{const r=await (await fetch('/api/login',{method:'POST',body:JSON.stringify({password:document.getElementById('pw').value})})).json();
   if(r.ok)location.href='/admin';else m.textContent=r.msg}catch(_){m.textContent='robot not reachable'}}
+// ---- same WiFi as the robot? (2026-10-30) On the internet link, offer the direct WiFi address (much
+// faster video) with a one-time pass so you stay logged in; on the direct page, offer the internet link
+// when the robot stops answering (you left the WiFi).
+const NB=document.getElementById('netbar');
+function nbShow(html){NB.innerHTML=html;NB.style.display=html?'':'none'}
+async function lanSwitch(lan){
+ try{const h=await(await fetch('/api/lan/handoff')).json();if(h.ok){location.href=h.url;return}}catch(e){}
+ location.href=lan+'/login'}
+function lanAuto(on){try{localStorage.setItem('autoLan',on?'1':'0')}catch(e){}}
+let REMOTE_URL='';
+(async()=>{let r;try{r=await(await fetch('/api/lan')).json()}catch(e){return}
+ if(r.direct){REMOTE_URL=r.remote||'';return}
+ if(!r.same||!r.lan)return;
+ const ok=await new Promise(res=>{const i=new Image(),t=setTimeout(()=>res(false),2500);
+  i.onload=()=>{clearTimeout(t);res(true)};i.onerror=()=>{clearTimeout(t);res(false)};i.src=r.lan+'/lan_ping.gif?t='+Date.now()});
+ let auto=false;try{auto=localStorage.getItem('autoLan')=='1'}catch(e){}
+ if(ok&&auto)return lanSwitch(r.lan);
+ nbShow(`📶 You're on the robot's WiFi: the direct connection is much faster.
+  <button onclick="lanSwitch('${r.lan}')">⚡ SWITCH TO DIRECT</button>
+  <label><input type="checkbox" onchange="lanAuto(this.checked)"${auto?' checked':''}> always</label>`+
+  (ok?'':`<br><small>first time: the browser warns about the robot's own certificate: choose Advanced → Proceed.</small>`))})();
 </script></body></html>
