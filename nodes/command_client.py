@@ -39,6 +39,17 @@ def transcribe(audio_b64, mime='', places=None, timeout=100):
     return _call('/transcribe', {'audio_b64': audio_b64, 'mime': mime, 'places': places or []}, timeout=timeout)
 
 
+def vision_multi(mode, views, context=None, timeout=60):
+    """Several labelled views at once: views = [(label, bytes, 'image/jpeg' | 'image/png'), ...]."""
+    import base64
+    views = [v for v in views if v and v[1]]
+    if not views:
+        return {'ok': False, 'error': 'no camera frame'}
+    return _call('/vision', {'mode': mode, 'context': context or {},
+                             'images': [{'label': l, 'b64': base64.b64encode(b).decode('ascii'), 'type': t}
+                                        for l, b, t in views]}, timeout=timeout)
+
+
 def vision(mode, jpg, context=None, timeout=TIMEOUT):
     """mode: hazard | blocked | describe | arrival; jpg: bytes of one camera frame."""
     import base64

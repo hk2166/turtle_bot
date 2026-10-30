@@ -202,7 +202,8 @@ def parse(text, places, requester=None):
 # (it used to be described as a 1.25 m mast). The robot's own parts in view double as a ruler.
 ROBOT = """You are the eyes of an indoor office delivery robot. The image comes from a forward-facing camera
 mounted near the MIDDLE of the robot: lens 39 cm above the floor, 7.5 cm behind the lidar (so about 30 cm
-behind the robot's front edge), looking ahead and slightly down.
+behind the robot's front edge), looking ahead and about 25 degrees down: it sees the floor from about 0.7 m
+to 2 m ahead (the top edge of the image is ~2 m away at floor level).
 
 Parts of the robot itself are in the picture. They are never obstacles:
 - the black glossy surface across the bottom of the image is the robot's own top deck; its far edge is the
@@ -302,25 +303,71 @@ right now.".""",
 }
 MAX_IMAGE_B64 = 3 << 20
 
+# ---- the robot is obstructed: look through every view at once and plan a short way around (2026-10-30)
+VISION['maneuver'] = {
+    'effort': 'medium', 'max_tokens': 8000,
+    'prompt': ROBOT + """
 
-def vision(mode, image_b64, context=None):
+The robot is OBSTRUCTED: something is close in front of it or it could not get through. Several views are
+attached, each labelled:
+- FRONT CAMERA: the camera described above (the floor 0.7-2 m ahead).
+- HIGH CAMERA (if attached): a second camera higher up on the robot, also facing forward, wider view (it may
+  show table edges and legs from above). Its picture is upright.
+- LIDAR MAP: top-down, 1 px = 1 cm, the robot at the centre facing UP (the green rectangle is its exact
+  outline, 44 x 38 cm), white dots = lidar returns 21 cm above the floor, red X = hazards the camera marked
+  (things the lidar may miss), yellow arrow = straight-line direction to its destination, grid lines every
+  0.5 m. Left in the map is the robot's left.
+
+Plan at most 3 small moves that get it around the obstruction toward the destination. Moves:
+back (metres, 0.05-0.5), forward (metres, 0.05-0.8), turn_left / turn_right (degrees, 5-120, on the spot
+about its centre). Then normal navigation takes over again (then = resume): you only need to get it into
+a clear position facing a free gap, not all the way. It can NEVER go under a table or desk; table and chair
+legs and chair bases are the usual problem. A gap must be at least 50 cm wide. Every move is checked against
+the lidar before it runs and stopped if it would touch something, so prefer moves through space the lidar
+map shows empty, and keep 10 cm from red X marks. If there is no way through (a closed door, a blocked
+corridor, people standing there), plan no moves and set then to wait (it will clear) or give_up.
+obstruction: what is in the way, few words. reason: one sentence why these moves. message: one short
+sentence for the office if it must wait or give up, otherwise empty.""",
+    'schema': {'type': 'object', 'properties': {
+        'obstruction': {'type': 'string'},
+        'moves': {'type': 'array', 'items': {'type': 'object', 'properties': {
+            'action': {'type': 'string', 'enum': ['back', 'forward', 'turn_left', 'turn_right']},
+            'amount': {'type': 'number'}},
+            'required': ['action', 'amount'], 'additionalProperties': False}},
+        'then': {'type': 'string', 'enum': ['resume', 'wait', 'give_up']},
+        'reason': {'type': 'string'}, 'message': {'type': 'string'}},
+        'required': ['obstruction', 'moves', 'then', 'reason', 'message'], 'additionalProperties': False},
+}
+
+
+def vision(mode, image_b64, context=None, images=None):
+    """images: optional [{'label', 'b64', 'type'}] for several views at once (maneuver); else image_b64."""
     t0 = time.time()
     spec = VISION.get(mode)
     if spec is None:
         return {'ok': False, 'error': f'unknown vision mode {mode}'}
-    if not image_b64 or len(image_b64) > MAX_IMAGE_B64:
-        return {'ok': False, 'error': 'no camera frame' if not image_b64 else 'frame too large'}
+    views = [v for v in (images or []) if isinstance(v, dict) and v.get('b64')]
+    if not views:
+        views = [{'label': '', 'b64': image_b64}] if image_b64 else []
+    if not views or any(len(v['b64']) > MAX_IMAGE_B64 for v in views) or len(views) > 4:
+        return {'ok': False, 'error': 'no camera frame' if not views else 'frames too large'}
     c = client()
     if c is None:
         return {'ok': False, 'error': f'no Anthropic API key: put it in {KEY_FILE}'}
     ctx = '\n'.join(f'{k}: {v}' for k, v in (context or {}).items() if v not in (None, ''))
-    content = [{'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/jpeg', 'data': image_b64}},
-               {'type': 'text', 'text': (f'Context:\n{ctx}\n\n' if ctx else '') + 'Answer about this frame.'}]
+    content = []
+    for v in views:
+        if v.get('label'):
+            content.append({'type': 'text', 'text': str(v['label'])[:200]})
+        mt = v.get('type') if v.get('type') in ('image/jpeg', 'image/png') else 'image/jpeg'
+        content.append({'type': 'image', 'source': {'type': 'base64', 'media_type': mt, 'data': v['b64']}})
+    content.append({'type': 'text', 'text': (f'Context:\n{ctx}\n\n' if ctx else '')
+                    + ('Answer about these views.' if len(views) > 1 else 'Answer about this frame.')})
     try:
         resp = c.beta.messages.create(
-            model=MODEL, max_tokens=2048,
+            model=MODEL, max_tokens=spec.get('max_tokens', 2048),
             betas=['server-side-fallback-2026-07-01'], fallbacks='default',
-            output_config={'effort': EFFORT, 'format': {'type': 'json_schema', 'schema': spec['schema']}},
+            output_config={'effort': spec.get('effort', EFFORT), 'format': {'type': 'json_schema', 'schema': spec['schema']}},
             system=spec['prompt'],
             messages=[{'role': 'user', 'content': content}],
         )
@@ -465,7 +512,7 @@ class Handler(BaseHTTPRequestHandler):
                   json.dumps({'ms': r.get('ms'), 'text': r.get('text'), 'error': r.get('error')}), flush=True)
             return self._send(200, r)
         if self.path == '/vision':
-            r = vision(str(body.get('mode', '')), body.get('image_b64'), body.get('context'))
+            r = vision(str(body.get('mode', '')), body.get('image_b64'), body.get('context'), body.get('images'))
             res = r.get('result') or {}
             print(time.strftime('%H:%M:%S'), 'vision', body.get('mode'), 'ok' if r.get('ok') else 'FAIL',
                   json.dumps({'ms': r.get('ms'), 'usage': r.get('usage'), 'error': r.get('error'),

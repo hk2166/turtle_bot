@@ -277,19 +277,142 @@ class Ros(Node):
             ok = d
         if ok < 0.08:
             return 0.0, 'no room behind it (lidar)'
-        cmd = Twist()
-        cmd.linear.x = -v
-        end = time.time() + ok / v
-        while time.time() < end:
-            live = self.lidar_points()
-            if live is not None and unstick.clearance(live, -v * 0.3, 0, 0) < min(unstick.LIVE_MARGIN, limit):
+        self._drive(-v, 0.0, ok / v, min(unstick.LIVE_MARGIN, limit))
+        return ok, None
+
+    def _drive(self, vx, wz, secs, stop_at, avoid=None):
+        """Drive (vx, wz) for secs at 10 Hz, ramped at <= 0.4 m/s^2 (tower stability: <= 0.5), stopping
+        early when the footprint a moment ahead would come within stop_at of the live lidar (+ avoid
+        points). Returns the seconds actually driven at speed."""
+        import unstick
+        cmd, v, w, t0 = Twist(), 0.0, 0.0, time.time()
+        end, driven = t0 + secs, 0.0
+        while time.time() < end and not handbrake_on():
+            pts = self.obstacle_points(avoid)
+            if pts is not None and unstick.clearance(pts, vx * 0.3, 0.0, wz * 0.3) < stop_at:
                 break
+            v += min(max(vx - v, -0.04), 0.04)        # one ramp step per 0.1 s
+            w += min(max(wz - w, -0.12), 0.12)
+            cmd.linear.x, cmd.angular.z = v, w
+            self.pub_stop.publish(cmd)
+            time.sleep(0.1)
+            driven += 0.1
+        while abs(v) > 1e-3 or abs(w) > 1e-3:          # ramp down too
+            v = 0.0 if abs(v) <= 0.04 else v - math.copysign(0.04, v)
+            w = 0.0 if abs(w) <= 0.12 else w - math.copysign(0.12, w)
+            cmd.linear.x, cmd.angular.z = v, w
             self.pub_stop.publish(cmd)
             time.sleep(0.1)
         for _ in range(3):
             self.pub_stop.publish(Twist())
             time.sleep(0.05)
-        return ok, None
+        return driven
+
+    def obstacle_points(self, avoid_map=None):
+        """Lidar points + extra map-frame points (camera hazard marks) in base_link, N x 2."""
+        pts = self.lidar_points()
+        if avoid_map is not None and len(avoid_map):
+            p = self.pose()
+            if p is not None:
+                a = np.asarray(avoid_map, float)[:, :2]
+                c, s_ = math.cos(p[2]), math.sin(p[2])
+                dx, dy = a[:, 0] - p[0], a[:, 1] - p[1]
+                extra = np.column_stack([c * dx + s_ * dy, -s_ * dx + c * dy])
+                pts = extra if pts is None else np.vstack([pts, extra])
+        return pts
+
+    def run_moves(self, moves, avoid_map=None, v=0.08, w=0.35):
+        """Claude's plan, one move at a time: each simulated against the lidar (+ hazard marks) with the true
+        footprint first and cut short where it would touch, then driven with the live check. Returns what
+        was done, as text."""
+        import unstick
+        done = []
+        for mv in moves[:3]:
+            a = mv.get('action')
+            try:
+                amt = abs(float(mv.get('amount', 0)))
+            except (TypeError, ValueError):
+                continue
+            if a in ('back', 'forward'):
+                dist = min(amt, 0.5 if a == 'back' else 0.8)
+                vx, wz, secs, unit = (v if a == 'forward' else -v), 0.0, dist / v, 'm'
+            elif a in ('turn_left', 'turn_right'):
+                ang = math.radians(min(amt, 120))
+                vx, wz, secs, unit = 0.0, (w if a == 'turn_left' else -w), ang / w, '°'
+            else:
+                continue
+            if handbrake_on():
+                done.append('stopped: handbrake on')
+                break
+            pts = self.obstacle_points(avoid_map)
+            if pts is None:
+                done.append('stopped: no lidar')
+                break
+            now = unstick.clearance(pts, 0, 0, 0)
+            limit = min(unstick.MARGIN, now - 0.004)
+            ok_t, t = 0.0, 0.0
+            while t < secs - 1e-9:
+                t = min(secs, t + 0.05)
+                if unstick.clearance(pts, vx * t, 0.0, wz * t) < limit:
+                    break
+                ok_t = t
+            if ok_t < 0.25 * secs or ok_t < 0.5:
+                done.append(f'{a.replace("_", " ")} {amt:g}{unit}: not clear by the lidar, stopped there')
+                break
+            ran = self._drive(vx, wz, ok_t, min(unstick.LIVE_MARGIN, limit), avoid_map)
+            got = abs(vx) * ran if vx else math.degrees(abs(wz) * ran)
+            done.append(f'{a.replace("_", " ")} {got:.2f} m' if vx else f'{a.replace("_", " ")} {got:.0f}°')
+            if ran < ok_t - 0.25:
+                done.append('stopped early: something came close')
+                break
+            time.sleep(0.3)
+        return done
+
+    def lidar_map_png(self, marks=(), goal=None, plan=None, half=2.5):
+        """Top-down picture for Claude: robot at the centre facing up, 1 px = 1 cm, lidar white, camera
+        hazard marks red X, Nav2's path cyan, destination direction yellow, grid every 0.5 m."""
+        S = int(half * 200)
+        img = np.zeros((S, S, 3), np.uint8)
+        c0 = S // 2
+
+        def px(x, y):                                # base_link (x fwd, y left) -> pixel
+            return int(round(c0 - y * 100)), int(round(c0 - x * 100))
+        for g in np.arange(-half, half + 1e-6, 0.5):
+            k = int(round(c0 + g * 100))
+            cv2.line(img, (k, 0), (k, S - 1), (45, 45, 45), 1)
+            cv2.line(img, (0, k), (S - 1, k), (45, 45, 45), 1)
+        p = self.pose()
+
+        def to_base(xm, ym):
+            dx, dy = xm - p[0], ym - p[1]
+            return math.cos(p[2]) * dx + math.sin(p[2]) * dy, -math.sin(p[2]) * dx + math.cos(p[2]) * dy
+        if p is not None and plan:
+            pp = [px(*to_base(x, y)) for x, y in plan[:200]]
+            for a, b in zip(pp, pp[1:]):
+                cv2.line(img, a, b, (255, 220, 0), 2)
+        pts = self.lidar_points()
+        if pts is not None:
+            for x, y in pts:
+                if abs(x) < half and abs(y) < half:
+                    cv2.circle(img, px(x, y), 2, (255, 255, 255), -1)
+        if p is not None:
+            for mx, my in marks:
+                bx, by = to_base(mx, my)
+                q = px(bx, by)
+                cv2.line(img, (q[0] - 7, q[1] - 7), (q[0] + 7, q[1] + 7), (60, 60, 255), 2)
+                cv2.line(img, (q[0] + 7, q[1] - 7), (q[0] - 7, q[1] + 7), (60, 60, 255), 2)
+            if goal is not None:
+                gx, gy = to_base(*goal)
+                d = math.hypot(gx, gy)
+                if d > 0.05:
+                    e = px(gx / d * min(d, half * 0.9), gy / d * min(d, half * 0.9))
+                    cv2.arrowedLine(img, (c0, c0), e, (0, 230, 255), 3, tipLength=0.08)
+        hl, hw = 0.22, 0.19
+        cv2.rectangle(img, px(hl, hw), px(-hl, -hw), (60, 220, 60), 2)
+        cv2.line(img, px(0, 0), px(hl, 0), (60, 220, 60), 2)           # heading tick
+        cv2.putText(img, 'FRONT', (c0 - 28, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1)
+        ok, buf = cv2.imencode('.png', img)
+        return buf.tobytes() if ok else None
 
     def clear_costmaps(self):
         for c in self.clear_cli:
@@ -570,6 +693,7 @@ class Vision:
         self.last_hazard, self.limited, self.slow_until, self.inflight = None, False, 0.0, False
         self.logged = {}
         self.marks, self.had_marks = [], False    # [{'exp', 'x', 'y', 'what', 'pts'}] hazards on the map
+        self.man_lock = threading.Lock()             # one maneuver at a time
         threading.Thread(target=self._hazard_loop, daemon=True).start()
         threading.Thread(target=self._marks_loop, daemon=True).start()
 
@@ -664,10 +788,11 @@ class Vision:
         self.marks.append({'exp': exp, 'x': cx, 'y': cy, 'what': what, 'pts': pts})
         return {**info, 'text': f"{what} at ({cx:.2f}, {cy:.2f}), {rng:.1f} m ahead [{seen_by}]"}
 
-    def back_off(self, m):
-        """A hazard close ahead while driving: pause the goal, reverse a little if the lidar allows, then
-        resume it. The planner then routes around the mark instead of nosing into the gap. At most twice
-        a goal, 30 s apart."""
+    def get_around(self, m):
+        """A hazard close ahead while driving: pause the goal, look through every view and let Claude plan
+        a few lidar-checked moves around it (maneuver); if that can't run, just reverse a little if the
+        lidar allows. Then resume the goal: the planner routes around the mark. At most twice a goal,
+        30 s apart."""
         goal = (self.ros.goal, getattr(self.ros, 'goal_yaw', 0.0))
         key = goal[0] if goal[0] else 'queue'
         bo = getattr(self, '_bo', {'key': None, 'n': 0, 't': 0.0})
@@ -678,18 +803,112 @@ class Vision:
         bo['n'] += 1
         bo['t'] = time.time()
         self._bo = bo
-        secs = VISION_BACKOFF_M / 0.08 + 2.0
-        queued = Handler.queue.detour(secs, f"{m['what']} ahead") if Handler.queue else False
+        queued = Handler.queue.detour(120, f"{m['what']} ahead") if Handler.queue else False
         if not queued:
             if not goal[0]:
                 return                                # nothing of ours is driving: leave it to Nav2
             self.ros.cancel_all_goals()
         time.sleep(0.6)                               # let the controller stop commanding first
-        moved, why = self.ros.back_off(VISION_BACKOFF_M)
-        self.log(f"👁 {m['what']} {m['range']:.1f} m ahead: " +
-                 (f'backed off {moved * 100:.0f} cm, re-planning around it' if moved else f'not backing off ({why}), re-planning around it'))
-        if not queued:
+        then, msg = 'resume', ''
+        r = self.maneuver(f"{m['what']} {m['range']:.1f} m ahead ({m['seen_by']})", goal=goal[0])
+        if r.get('ok'):
+            then, msg = r['result'].get('then', 'resume'), r['result'].get('message', '')
+        else:
+            moved, why = self.ros.back_off(VISION_BACKOFF_M)
+            self.log(f"👁 {m['what']} {m['range']:.1f} m ahead: " +
+                     (f'backed off {moved * 100:.0f} cm' if moved else f'not backing off ({why})') + ', re-planning around it')
+        if queued:
+            Handler.queue.end_detour(then, msg)
+        elif then != 'give_up':
             self.ros.send_goal(goal[0][0], goal[0][1], goal[1])
+        else:
+            self.log(f'🧭 giving up on the goal: {msg}')
+
+    def maneuver(self, why, move=True, goal=None):
+        """The robot is obstructed: send Claude every view at once (front camera, the high face camera when
+        it shows anything, and a top-down lidar map with the hazard marks, Nav2's path and the destination),
+        get up to 3 moves, and run them lidar-checked (Ros.run_moves). Never raises."""
+        if not self.man_lock.acquire(blocking=False):
+            return {'ok': False, 'msg': 'already working out a way around'}
+        try:
+            self.last_maneuver = time.time()
+            if not command_health().get('key'):
+                return {'ok': False, 'msg': 'no Anthropic API key'}
+            if not self._spend():
+                return {'ok': False, 'msg': f"today's vision limit ({VISION_DAILY_CAP} looks) is used up"}
+            brio = self.ros.snapshot()
+            high = None
+            try:
+                if face_health().get('available'):
+                    f, _e = face_client.frame(annotate=False)
+                    g = cv2.imdecode(np.frombuffer(f, np.uint8), cv2.IMREAD_GRAYSCALE) if f else None
+                    if g is not None and g.mean() > 25 and g.std() > 12:     # not dark / covered / blank
+                        high = f
+            except Exception:
+                pass
+            plan = [tuple(q[:2]) for q in (self.ros.plan or [])]
+            dest = plan[-1] if plan else (goal or self.ros.goal)
+            marks = [(m['x'], m['y']) for m in self.marks]
+            lid = self.ros.lidar_map_png(marks, dest, plan)
+            ctx = {'why': why}
+            p = self.ros.pose()
+            if p and dest:
+                dx, dy = dest[0] - p[0], dest[1] - p[1]
+                b = math.degrees(tc_wrap(math.atan2(dy, dx) - p[2]))
+                ctx['destination'] = f"{math.hypot(dx, dy):.1f} m away, {abs(b):.0f} deg to the {'left' if b > 0 else 'right'}"
+            pts = self.ros.lidar_points()
+            if pts is not None and len(pts):
+                ang = np.degrees(np.arctan2(pts[:, 1], pts[:, 0]))
+                rng = np.hypot(pts[:, 0], pts[:, 1])
+                free = []
+                for name, c in (('front', 0), ('front-left', 45), ('left', 90), ('back-left', 135),
+                                ('back', 180), ('back-right', -135), ('right', -90), ('front-right', -45)):
+                    sel = np.abs((ang - c + 180) % 360 - 180) < 22.5
+                    free.append(f"{name} {np.min(rng[sel]):.2f} m" if sel.any() else f"{name} >4 m")
+                ctx['lidar: nearest return from the robot centre'] = ', '.join(free)
+            views = [('FRONT CAMERA', brio, 'image/jpeg'), ('HIGH CAMERA', high, 'image/jpeg'),
+                     ('LIDAR MAP', lid, 'image/png')]
+            r = command_client.vision_multi('maneuver', views, ctx, timeout=90)
+            u = r.get('usage') or {}
+            with self.lock:
+                self.cost += u.get('in', 0) * PRICE_IN + u.get('out', 0) * PRICE_OUT
+            if not r.get('ok'):
+                self.log(f"🧭 couldn't plan a way around: {r.get('error')}")
+                return {'ok': False, 'msg': r.get('error')}
+            res = r['result']
+            mv = ', '.join(f"{x['action'].replace('_', ' ')} {x['amount']:g}" for x in res.get('moves', [])) or 'no moves'
+            self.log(f"🧭 {res.get('obstruction')}: {mv}, then {res.get('then')} ({res.get('reason')}) "
+                     f"[{len([v for v in views if v[1]])} views, {r.get('ms', 0) / 1000:.0f} s]")
+            done = []
+            if res.get('moves'):
+                if not move:
+                    done = ['plan only']
+                elif handbrake_on():
+                    done = ['not moving: 🅿 handbrake on (plan only)']
+                else:
+                    done = self.ros.run_moves(res['moves'], [q for m in self.marks for q in m['pts']])
+                self.log('🧭 ' + '; '.join(done))
+            return {'ok': True, 'result': res, 'done': done,
+                    'msg': f"🧭 {res.get('obstruction')}: {mv} → {'; '.join(done) or res.get('then')}"}
+        except Exception as e:
+            self.log(f'🧭 maneuver error: {e}')
+            return {'ok': False, 'msg': str(e)}
+        finally:
+            self.man_lock.release()
+
+    def queue_look(self, mode, ctx):
+        """fleet's vision hook. A blocked trip first tries to get around (maneuver), answered in the
+        'blocked' shape fleet understands; anything else (or no plan) is the normal single look."""
+        if mode == 'blocked' and time.time() - getattr(self, 'last_maneuver', 0) > 30:
+            r = self.maneuver(f"navigation couldn't get through to {ctx.get('destination', 'the destination')}")
+            if r.get('ok'):
+                res = r['result']
+                then = res.get('then', 'resume')
+                return {'cause': 'object_on_floor', 'what': res.get('obstruction', ''),
+                        'will_clear_soon': then != 'give_up',
+                        'advice': {'resume': 'wait_short', 'wait': 'wait_long'}.get(then, 'give_up'),
+                        'message': res.get('message') or f"worked around: {res.get('obstruction', '')}"}, None
+        return self.ask(mode, ctx)
 
     @staticmethod
     def hazard_on():
@@ -797,7 +1016,7 @@ class Vision:
             if self.ros.nav_state != 'DRIVING':
                 return
             if close:
-                self.back_off(close)
+                self.get_around(close)
             tight = []
             if room['clear_ahead_m'] is not None and room['clear_ahead_m'] < ROOM_MIN_AHEAD:
                 tight.append(f"only ~{room['clear_ahead_m']:.1f} m clear ahead")
@@ -1579,6 +1798,21 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/api/vision/scan':            # one hazard look now (parked too): mark what it finds
             self.json(self.vision.scan())
             return
+        if self.path == '/api/vision/maneuver':         # 🧭 GET AROUND: look + plan only; the page confirms
+            self.json(self.vision.maneuver('asked from the dashboard', move=False))
+            return
+        if self.path == '/api/vision/run_moves':        # ...then runs the confirmed plan, lidar-checked again
+            if handbrake_on():
+                self.json({'ok': False, 'msg': '🅿 handbrake is on'})
+                return
+            if self.ros.nav_state == 'DRIVING':
+                self.ros.cancel_all_goals()
+                time.sleep(0.6)
+            mv = [m for m in (body.get('moves') or []) if isinstance(m, dict)][:3]
+            done = self.ros.run_moves(mv, [q for m in self.vision.marks for q in m['pts']])
+            self.vision.log('🧭 ' + ('; '.join(done) or 'nothing to do'))
+            self.json({'ok': True, 'done': done})
+            return
         if self.path == '/api/vision/clear_marks':
             n = self.vision.clear_marks()
             self.state.fit_msg = f'👁 {n} hazard mark(s) cleared'
@@ -1940,7 +2174,7 @@ def main():
                                 lambda: ros.pose() is not None and not pid_alive('slam'), qlog,
                                 snap_fn=lambda x, y: snap_reachable(ros, x, y) or snap_goal(x, y),
                                 face_fn=face_identify,
-                                vision_fn=lambda mode, ctx: Handler.vision.ask(mode, ctx),
+                                vision_fn=lambda mode, ctx: Handler.vision.queue_look(mode, ctx),
                                 brake_fn=handbrake_on)
     threading.Thread(target=brake_guard, args=(ros, qlog), daemon=True).start()
     if handbrake_on():

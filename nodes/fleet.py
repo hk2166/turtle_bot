@@ -486,6 +486,20 @@ class Queue:
             self._save()
             return True
 
+    def end_detour(self, then='resume', msg=''):
+        """After detour(): resume now, wait a minute ('wait'), or count it as a blocked try ('give_up')."""
+        with self.lock:
+            job = next((j for j in self.jobs if j['status'] == 'waiting'
+                        and str(j.get('note', '')).startswith('backing off')), None)
+            if job is None:
+                return
+            if then == 'give_up':
+                self._blocked(job, msg or 'no way around')
+            else:
+                job['not_before'] = time.time() + (60 if then == 'wait' else 0)
+                job['note'] = f'waiting: {msg}' if then == 'wait' and msg else ''
+            self._save()
+
     def blocked_now(self, what):
         """The slip watcher (nodes/slip_watch.py) saw the robot pushing against something Nav2 can't see:
         stop this attempt now and handle it like a blocked path. False when no queue trip is driving."""

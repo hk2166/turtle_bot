@@ -168,6 +168,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    <button onclick="cmdFromMission()" title="give the robot a spoken or typed command (opens QUEUE & PLACES)">🎤 COMMAND</button>
    <button onclick="whatSee()" title="one look through the mast camera: Claude describes the scene (a cent or two)">👁 WHAT DO YOU SEE?</button>
    <button id="hazb" onclick="toggleHazard()" title="while Nav2 drives: a look every 3 s for things the lidar can't see (low objects, overhangs, glass); slows the robot and marks them on the map so it steers around them">⚠ HAZARD SPOTTER</button>
+   <button onclick="getAround()" title="obstructed? Claude looks through every view at once (front camera, high camera, top-down lidar map) and plans up to 3 moves; each is checked against the lidar before and while it runs. With the handbrake on it only plans.">🧭 GET AROUND</button>
    <button onclick="checkPath()" title="one look now (works parked): hazards it sees go on the map for 2 min and the planner goes around them">👁 CHECK PATH</button>
    <button id="clrmarks" onclick="clearMarks()" style="display:none" title="remove the camera's hazard marks from the map (if it marked something that isn't there)">✕ CLEAR MARKS</button>
    <small id="fit"></small>
@@ -558,6 +559,14 @@ function drawMarks(L){const mk=S.vision&&S.vision.marks;if(!mk||!mk.length)retur
 async function checkPath(){log('👁 checking the path…');
  let r;try{r=await(await post('/api/vision/scan',{})).json()}catch(e){r={ok:false,msg:'no answer'}}
  if(!r.ok)log(r.msg||'vision: no answer')}
+async function getAround(){log('🧭 looking through every view…');
+ let r;try{r=await(await post('/api/vision/maneuver',{})).json()}catch(e){r={ok:false,msg:'no answer'}}
+ if(!r.ok){log('🧭 '+(r.msg||'no answer'));return}
+ const p=r.result,mv=(p.moves||[]).map(m=>`${m.action.replace('_',' ')} ${m.amount}${m.action.startsWith('turn')?'°':' m'}`);
+ if(!mv.length){log(`🧭 ${p.obstruction}: no moves (${p.then}) ${p.message||''}`);return}
+ if(!confirm(`🧭 ${p.obstruction}\n\nPlan: ${mv.join(' → ')}\n${p.reason}\n\nRun it? (each move is checked against the lidar)`))return;
+ const d=await(await post('/api/vision/run_moves',{moves:p.moves})).json();
+ log('🧭 '+(d.ok?(d.done||[]).join('; '):d.msg))}
 async function clearMarks(){const r=await(await post('/api/vision/clear_marks',{})).json();log(`👁 ${r.cleared} hazard mark(s) cleared`)}
 async function handleTap(e){
  if(!M)return;
