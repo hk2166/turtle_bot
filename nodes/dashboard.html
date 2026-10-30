@@ -591,10 +591,38 @@ const aDev=(()=>{try{let d=localStorage.getItem('cb_admin_device');
 const aMsg=(t,c)=>{const m=document.getElementById('acmdmsg');m.textContent=t||'';m.className=c||''};
 function cmdFromMission(){setView('queue',document.querySelectorAll('.vtab')[2]);
  setTimeout(()=>{document.getElementById('acmdtext').focus();aListen()},150)}
-function aListen(){
- if(!SRec){aMsg('this browser has no speech input: type the command','bad');return}
+// The page records; the robot transcribes (Whisper on the robot) — works in Brave too. The browser's own
+// recognition is only the fallback when the robot's speech service is offline.
+let aMR=null, aStopT=null;
+const aStop=()=>{clearInterval(aStopT);if(aMR&&aMR.state!=='inactive')aMR.stop()};
+async function aListen(){
  if(!window.isSecureContext){aMsg(`🎤 needs the https dashboard: https://${location.hostname}:8444/admin (typing works here)`,'bad');return}
+ if(aMR){aStop();return}
  if(aRec){aRec.stop();return}
+ if(!navigator.mediaDevices||!window.MediaRecorder)return aListenBrowser();
+ let st;try{st=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}})}
+ catch(e){aMsg('microphone blocked for this page','bad');return}
+ const mime=['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg;codecs=opus'].find(t=>MediaRecorder.isTypeSupported(t))||'';
+ const chunks=[], ac=new (window.AudioContext||window.webkitAudioContext)(), an=ac.createAnalyser();
+ an.fftSize=1024;ac.createMediaStreamSource(st).connect(an);
+ aMR=new MediaRecorder(st,mime?{mimeType:mime}:{});
+ aMR.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+ aMR.onstop=async()=>{const type=aMR.mimeType||mime;aMR=null;st.getTracks().forEach(t=>t.stop());try{ac.close()}catch(e){}
+  document.getElementById('amic').classList.remove('armed');const blob=new Blob(chunks,{type});
+  if(blob.size<1500){aMsg('too short: tap 🎤 and say the whole command','bad');return}
+  aMsg('understanding your voice…');
+  const b64=await new Promise(r=>{const f=new FileReader();f.onload=()=>r(String(f.result).split(',')[1]);f.readAsDataURL(blob)});
+  let r;try{r=await(await post('/api/command/transcribe',{audio:b64,mime:type,device:aDev})).json()}catch(e){r={ok:false,error:'no answer'}}
+  if(!r.ok){if(/offline/.test(r.error||'')&&SRec)return aListenBrowser();aMsg(r.error||'no answer','bad');return}
+  document.getElementById('acmdtext').value=r.text;aSend(true)};
+ aMR.start(250);document.getElementById('amic').classList.add('armed');
+ aMsg('listening… say the command, then pause (or tap 🎤 to finish)');
+ const buf=new Float32Array(an.fftSize), t0=Date.now();let spoke=false, quiet=0;
+ aStopT=setInterval(()=>{an.getFloatTimeDomainData(buf);let s=0;for(const v of buf)s+=v*v;
+  if(Math.sqrt(s/buf.length)>0.02){spoke=true;quiet=0}else if(spoke){quiet=quiet||Date.now();if(Date.now()-quiet>1300)aStop()}
+  if(Date.now()-t0>12000)aStop()},100)}
+function aListenBrowser(){
+ if(!SRec){aMsg('this browser has no speech input: type the command','bad');return}
  aRec=new SRec();aRec.lang='en-IN';aRec.interimResults=true;
  document.getElementById('amic').classList.add('armed');aMsg('listening…');
  aRec.onresult=e=>{let t='';for(const r of e.results)t+=r[0].transcript;document.getElementById('acmdtext').value=t};

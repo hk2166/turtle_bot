@@ -334,6 +334,94 @@ def vision(mode, image_b64, context=None):
             'usage': {'in': u.input_tokens, 'out': u.output_tokens}, 'model': resp.model}
 
 
+# ------------------------------------------------------------------ speech-to-text (on the robot)
+# Browsers' built-in speech recognition sends the audio to Google (Chrome) or fails outright ("network" in
+# Brave and other non-Google Chromium builds, 2026-10-30). So the page records the audio and the robot
+# transcribes it with Whisper (faster-whisper, int8, CPU), offline: works in any browser, audio never
+# leaves the robot. Measured on the Pi with nav running, 2 threads: base.en ~360 MB peak, 11 s of speech
+# in 8.4 s; tiny.en ~280 MB, 5.1 s. The model lives in a worker PROCESS started on the first command and
+# ended after STT_IDLE s without one, so the memory goes back to zero when nobody uses voice.
+STT_MODEL = os.environ.get('STT_MODEL', 'base.en')       # tiny.en: faster, a little worse on names
+STT_THREADS = int(os.environ.get('STT_THREADS', '2'))    # leave cores for navigation
+STT_IDLE = float(os.environ.get('STT_IDLE', '600'))
+STT_DIR = os.path.expanduser('~/.cache/campus_bot/whisper')
+MAX_AUDIO_B64 = 4 << 20
+_stt_model = None                                         # inside the worker process only
+
+
+def _stt_init(model, threads, root):
+    global _stt_model
+    from faster_whisper import WhisperModel
+    _stt_model = WhisperModel(model, device='cpu', compute_type='int8', cpu_threads=threads, download_root=root)
+
+
+def _stt_run(audio, suffix, prompt):
+    """Decode with the system ffmpeg (16 kHz mono float32: faster-whisper's own PyAV path breaks on PyAV 19)
+    from a temp file (Safari's mp4 needs a seekable input), then transcribe. Runs in the worker."""
+    import subprocess
+    import tempfile
+    import numpy as np
+    with tempfile.NamedTemporaryFile(suffix=suffix, dir='/dev/shm') as f:
+        f.write(audio)
+        f.flush()
+        raw = subprocess.run(['ffmpeg', '-loglevel', 'error', '-i', f.name, '-f', 'f32le', '-ac', '1',
+                              '-ar', '16000', 'pipe:1'], capture_output=True, timeout=30).stdout
+    pcm = np.frombuffer(raw, np.float32)
+    if len(pcm) < 1600:                                   # < 0.1 s: nothing recorded
+        return ''
+    segs, _info = _stt_model.transcribe(pcm, language='en', beam_size=1, vad_filter=True,
+                                        initial_prompt=prompt)
+    return ' '.join(s.text.strip() for s in segs).strip()
+
+
+_stt = {'ex': None, 'last': 0.0, 'lock': threading.Lock()}
+
+
+def _stt_reaper():
+    while True:
+        time.sleep(30)
+        with _stt['lock']:
+            if _stt['ex'] is not None and time.time() - _stt['last'] > STT_IDLE:
+                _stt['ex'].shutdown(wait=False, cancel_futures=True)
+                _stt['ex'] = None
+                print(time.strftime('%H:%M:%S'), 'speech model unloaded (idle)', flush=True)
+
+
+def transcribe(audio_b64, mime='', places=None):
+    import base64
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    t0 = time.time()
+    if not audio_b64 or len(audio_b64) > MAX_AUDIO_B64:
+        return {'ok': False, 'error': 'no audio' if not audio_b64 else 'recording too long'}
+    try:
+        audio = base64.b64decode(audio_b64)
+    except ValueError:
+        return {'ok': False, 'error': 'bad audio'}
+    suffix = '.mp4' if 'mp4' in (mime or '') else '.ogg' if 'ogg' in (mime or '') else '.webm'
+    names = ', '.join(str(p) for p in (places or [])[:40])
+    prompt = 'Commands for an office delivery robot. ' + (f'Places and people: {names}.' if names else '')
+    with _stt['lock']:
+        if _stt['ex'] is None:
+            _stt['ex'] = ProcessPoolExecutor(1, mp_context=multiprocessing.get_context('spawn'),
+                                             initializer=_stt_init, initargs=(STT_MODEL, STT_THREADS, STT_DIR))
+            print(time.strftime('%H:%M:%S'), f'speech model {STT_MODEL} loading', flush=True)
+        _stt['last'] = time.time()
+        ex = _stt['ex']
+    try:
+        text = ex.submit(_stt_run, audio, suffix, prompt).result(timeout=90)
+    except Exception as e:
+        with _stt['lock']:                                # a broken worker: start fresh next time
+            if _stt['ex'] is ex:
+                ex.shutdown(wait=False, cancel_futures=True)
+                _stt['ex'] = None
+        return {'ok': False, 'error': f'speech recognition failed: {e.__class__.__name__}'}
+    _stt['last'] = time.time()
+    if not text:
+        return {'ok': False, 'error': "didn't hear anything: hold the phone closer and speak after the beep"}
+    return {'ok': True, 'text': text, 'ms': int((time.time() - t0) * 1000), 'model': STT_MODEL}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, obj):
         b = json.dumps(obj).encode()
@@ -346,19 +434,25 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/health':
             return self._send(200, {'ok': True, 'key_configured': bool(api_key()), 'model': MODEL,
-                                    'effort': EFFORT})
+                                    'effort': EFFORT,
+                                    'stt': {'model': STT_MODEL, 'loaded': _stt['ex'] is not None}})
         self._send(404, {'ok': False, 'error': 'not found'})
 
     def do_POST(self):
-        if self.path not in ('/parse', '/vision'):
+        if self.path not in ('/parse', '/vision', '/transcribe'):
             return self._send(404, {'ok': False, 'error': 'not found'})
         try:
             n = int(self.headers.get('Content-Length', 0) or 0)
-            body = json.loads(self.rfile.read(min(n, MAX_IMAGE_B64 + (1 << 16))) or b'{}')
+            body = json.loads(self.rfile.read(min(n, max(MAX_IMAGE_B64, MAX_AUDIO_B64) + (1 << 16))) or b'{}')
             if not isinstance(body, dict):
                 raise ValueError
         except ValueError:
             return self._send(400, {'ok': False, 'error': 'bad JSON body'})
+        if self.path == '/transcribe':
+            r = transcribe(body.get('audio_b64'), str(body.get('mime') or ''), body.get('places'))
+            print(time.strftime('%H:%M:%S'), 'transcribe', 'ok' if r.get('ok') else 'FAIL',
+                  json.dumps({'ms': r.get('ms'), 'text': r.get('text'), 'error': r.get('error')}), flush=True)
+            return self._send(200, r)
         if self.path == '/vision':
             r = vision(str(body.get('mode', '')), body.get('image_b64'), body.get('context'))
             res = r.get('result') or {}
@@ -379,6 +473,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    threading.Thread(target=_stt_reaper, daemon=True).start()
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f'command service on http://{HOST}:{PORT}  (model {MODEL}, effort {EFFORT}; '
           f'API key {"found" if api_key() else "MISSING: " + KEY_FILE})', flush=True)

@@ -9,6 +9,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 VENV_PY="${LLM_VENV:-$HOME/.venvs/llm}/bin/python"
 PORT="${COMMAND_PORT:-8071}"
 KEY="$HOME/.campus_bot/anthropic.key"
+export STT_MODEL="${STT_MODEL:-base.en}" STT_THREADS="${STT_THREADS:-2}"   # from config/robot.env
 
 case "${1:-on}" in
   on)

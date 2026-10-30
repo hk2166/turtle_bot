@@ -34,6 +34,11 @@ def parse(text, places, requester=None):
     return _call('/parse', {'text': text, 'places': places, 'requester': requester or {}})
 
 
+def transcribe(audio_b64, mime='', places=None, timeout=100):
+    """Speech -> text on the robot (Whisper in the command service). audio_b64: the browser's recording."""
+    return _call('/transcribe', {'audio_b64': audio_b64, 'mime': mime, 'places': places or []}, timeout=timeout)
+
+
 def vision(mode, jpg, context=None, timeout=TIMEOUT):
     """mode: hazard | blocked | describe | arrival; jpg: bytes of one camera frame."""
     import base64

@@ -143,20 +143,52 @@ async function cancelMine(){if(!mine)return;if(!confirm('Cancel your request?'))
  await api('/api/request/cancel',mine);poll()}
 async function gotIt(){if(!mine)return;await api('/api/request/done',mine);poll()}
 
-// ---- voice / typed commands: speech -> text in the browser, text -> plan by the robot (Claude), then a
-// person confirms. Browsers only give a page the microphone over https.
+// ---- voice / typed commands. The page RECORDS the voice and the robot transcribes it (Whisper, on the
+// robot): works in any browser (Brave's built-in speech recognition always failed with "network") and
+// the audio never leaves the robot. Text -> plan by Claude -> a person confirms. Browsers only give a
+// page the microphone over https.
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 let rec=null, plan=null, spoken=false, active=null;
-if(!SR) $('micnote').textContent='This browser has no speech input: type the command instead (Chrome, Edge and Safari can listen).';
-else if(!window.isSecureContext){
+const canRecord=()=>window.isSecureContext&&navigator.mediaDevices&&window.MediaRecorder;
+if(!window.isSecureContext){
  const u=`https://${location.hostname}:8444/`;
  $('micnote').innerHTML='';$('micnote').append('🎤 needs the secure page: ',
    Object.assign(document.createElement('a'),{href:u,textContent:u,style:'color:var(--fg)'}),
    ' (tap through the warning once). Typing works here too.');
-}
-function listen(){
- if(!SR||!window.isSecureContext){$('cmdtext').focus();return}
+}else if(!window.MediaRecorder&&!SR) $('micnote').textContent='This browser can\'t record: type the command instead.';
+let mr=null, mrStream=null, mrAC=null, mrTimer=null;
+function blobB64(b){return new Promise(r=>{const f=new FileReader();f.onload=()=>r(String(f.result).split(',')[1]);f.readAsDataURL(b)})}
+function stopRec(){clearInterval(mrTimer);if(mr&&mr.state!=='inactive')mr.stop()}
+async function listen(){
+ if(mr){stopRec();return}
  if(rec){rec.stop();return}
+ if(!canRecord())return listenBrowser();
+ try{mrStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}})}
+ catch(e){$('cmdmsg').textContent='microphone blocked: allow it for this page';$('cmdmsg').className='badc';return}
+ const mime=['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg;codecs=opus'].find(t=>MediaRecorder.isTypeSupported(t))||'';
+ const chunks=[];mr=new MediaRecorder(mrStream,mime?{mimeType:mime}:{});
+ mr.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+ mr.onstop=async()=>{
+  const type=mr.mimeType||mime;mr=null;mrStream.getTracks().forEach(t=>t.stop());try{mrAC.close()}catch(_){}
+  $('mic').classList.remove('on');const blob=new Blob(chunks,{type});
+  if(blob.size<1500){$('cmdmsg').textContent='too short: tap 🎤 and say the whole command';$('cmdmsg').className='badc';return}
+  $('cmdmsg').textContent='understanding your voice…';$('cmdmsg').className='dim';
+  let r;try{r=await api('/api/command/transcribe',{audio:await blobB64(blob),mime:type,device})}catch(_){r={ok:false,error:'robot not reachable'}}
+  if(!r.ok){
+   if(/offline/.test(r.error||'')&&SR)return listenBrowser();          // robot speech service down
+   $('cmdmsg').textContent=r.error;$('cmdmsg').className='badc';return}
+  $('cmdtext').value=r.text;sendCmd(true)};
+ mr.start(250);$('mic').classList.add('on');
+ $('cmdmsg').textContent='listening… say the command, then pause (or tap 🎤 to finish)';$('cmdmsg').className='dim';
+ // stop by itself ~1.3 s after you stop talking (12 s at most)
+ mrAC=new (window.AudioContext||window.webkitAudioContext)();const an=mrAC.createAnalyser();an.fftSize=1024;
+ mrAC.createMediaStreamSource(mrStream).connect(an);const buf=new Float32Array(an.fftSize);
+ let spoke=false,quiet=null;const t0=Date.now();
+ mrTimer=setInterval(()=>{an.getFloatTimeDomainData(buf);let s=0;for(const v of buf)s+=v*v;const rms=Math.sqrt(s/buf.length);
+  if(rms>0.02){spoke=true;quiet=null}else if(spoke){quiet=quiet||Date.now();if(Date.now()-quiet>1300)stopRec()}
+  if(Date.now()-t0>12000)stopRec()},100)}
+function listenBrowser(){                // fallback: the browser's own recognition (Chrome / Safari only)
+ if(!SR||!window.isSecureContext){$('cmdtext').focus();return}
  rec=new SR();rec.lang='en-IN';rec.interimResults=true;rec.maxAlternatives=1;
  $('mic').classList.add('on');$('cmdmsg').textContent='listening… say the whole command';$('cmdmsg').className='dim';
  rec.onresult=e=>{let t='';for(const r of e.results)t+=r[0].transcript;$('cmdtext').value=t};

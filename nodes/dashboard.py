@@ -828,6 +828,7 @@ class Handler(BaseHTTPRequestHandler):
     # Each command is one Claude call (a cent or two): the call page is open to the whole office WiFi, so
     # one command per device every COMMAND_GAP s and COMMAND_DAILY_CAP a day. The admin isn't limited.
     _cmd = {'day': '', 'n': 0, 'last': {}}
+    _stt_last = {}               # device -> time of its last transcription (local, free: a light limit)
 
     def command_allowed(self, device, admin):
         st, today = Handler._cmd, time.strftime('%F')
@@ -1041,6 +1042,25 @@ class Handler(BaseHTTPRequestHandler):
             print(time.strftime('%H:%M:%S'), 'command:', repr(str(body.get('text') or '')[:120]), '->',
                   (r.get('plan') or {}).get('summary') or r.get('error') or (r.get('plan') or {}).get('question'),
                   flush=True)
+            self.json(r)
+            return
+        if self.path == '/api/command/transcribe':     # the page's recording -> text, Whisper on the robot
+            dev = str(body.get('device') or '')[:64]
+            last = Handler._stt_last.get(dev, 0)
+            if not self.is_admin() and (not dev or time.time() - last < 2.0):
+                self.json({'ok': False, 'error': 'one recording every couple of seconds, please'})
+                return
+            Handler._stt_last[dev] = time.time()
+            # people's names come from the places ("Hemant's Desk" -> Hemant): hints for spelling them right
+            names = []
+            for p in fleet.load_places(AREA):
+                names.append(p['name'])
+                person = re.sub(r"'s\b.*$|\s+(desk|office|sir)\b.*$", '', p['name'], flags=re.I).strip()
+                if person and person.lower() != p['name'].lower():
+                    names.append(person)
+            r = command_client.transcribe(body.get('audio'), str(body.get('mime') or ''), names)
+            print(time.strftime('%H:%M:%S'), 'heard:', repr(r.get('text')) if r.get('ok') else r.get('error'),
+                  f"({r.get('ms')} ms)" if r.get('ms') else '', flush=True)
             self.json(r)
             return
         if self.path == '/api/command/run':
