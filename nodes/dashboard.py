@@ -784,6 +784,11 @@ LOGIN_PAGE = open(os.path.join(PROJECT, 'nodes', 'login.html'), 'rb').read()
 # The camera preview is view-only and public too: the call page shows what the robot sees.
 PUBLIC_GET = ('/', '/call', '/login', '/api/places', '/api/queue', '/frame.jpg', '/enroll', '/face')
 ENROLL_PORT = int(os.environ.get('ENROLL_PORT', '8443'))    # face/face_service.py's HTTPS enrolment page
+# The internet-facing copy (run/vps_tunnel.sh carries it to the VPS): listens on the Pi's localhost only,
+# and there NOTHING is open without the admin login (on the office WiFi the call page is open to all).
+# Tunnelled visitors arrive from 127.0.0.1, so this port must never get the "the robot itself" trust.
+REMOTE_PORT = int(os.environ.get('DASH_REMOTE_PORT', '8090'))
+REMOTE_OPEN = ('/login', '/api/login')
 PUBLIC_POST = ('/api/login', '/api/request', '/api/request/cancel', '/api/request/done')
 # admin actions that take the robot away from the queue (it pauses, a trip in progress goes back in front)
 TAKES_CONTROL = {'/api/goal': 'map goal', '/api/stop': 'STOP', '/api/drive': 'manual drive',
@@ -797,6 +802,8 @@ class Handler(BaseHTTPRequestHandler):
     auth = None
     queue = None
     vision = None
+    remote = False               # True on REMOTE_PORT (the internet, via the VPS)
+    _fails = []                  # times of wrong passwords on the remote port (slows guessing)
 
     def log_message(self, *a):
         pass
@@ -823,7 +830,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def is_admin(self):
         # the robot itself (scripts, curl on the Pi) is trusted; everyone else needs a login
-        return self.client_address[0] in ('127.0.0.1', '::1', '::ffff:127.0.0.1') or self.auth.valid(self.token())
+        local = not self.remote and self.client_address[0] in ('127.0.0.1', '::1', '::ffff:127.0.0.1')
+        return local or self.auth.valid(self.token())
+
+    def remote_gate(self, route, post):
+        """On the remote port only the login is open. True = refused (already answered)."""
+        if not self.remote or route in REMOTE_OPEN or self.auth.valid(self.token()):
+            return False
+        if post:
+            self.json({'ok': False, 'msg': 'log in first'}, 401)
+        else:
+            self.send(302, 'text/plain', b'login', (('Location', '/login'),))
+        return True
 
     # Each command is one Claude call (a cent or two): the call page is open to the whole office WiFi, so
     # one command per device every COMMAND_GAP s and COMMAND_DAILY_CAP a day. The admin isn't limited.
@@ -904,6 +922,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         route = self.path.split('?')[0]
+        if self.remote_gate(route, False):
+            return
         if route in ('/', '/index.html', '/call'):
             self.send(200, 'text/html; charset=utf-8', CALL_PAGE)
             return
@@ -1006,15 +1026,26 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b'{}')
         except ValueError:
             body = {}
+        if self.remote_gate(self.path.split('?')[0], True):
+            return
         # ---- open to everyone (the call page)
         if self.path == '/api/login':
+            if self.remote:
+                now = time.time()
+                Handler._fails = [t for t in Handler._fails if now - t < 600]
+                if len(Handler._fails) >= 10:
+                    self.json({'ok': False, 'msg': 'too many wrong passwords: wait 10 minutes'})
+                    return
             tok = self.auth.login(str(body.get('password', '')))
+            if tok is None and self.remote:
+                Handler._fails.append(time.time())
             if tok is None:
                 self.json({'ok': False, 'msg': 'wrong password' if fleet.Auth.configured() else
                            'no admin password yet: on the robot run  python3 tools/set_admin_password.py'})
             else:
                 self.json({'ok': True}, headers=(('Set-Cookie', f'cb_admin={tok}; Path=/; HttpOnly; '
-                                                  f'SameSite=Strict; Max-Age={fleet.SESSION_S}'),))
+                                                  f'SameSite=Strict; Max-Age={fleet.SESSION_S}'
+                                                  + ('; Secure' if self.remote else '')),))
             return
         if self.path == '/api/request':
             job, msg = self.queue.request(body.get('name'), body.get('place'), body.get('device'))
@@ -1511,6 +1542,13 @@ def main():
         start_https()
     except Exception as e:                      # never let https trouble take the plain dashboard down
         print(f'https dashboard off: {e}', flush=True)
+    try:
+        rsrv = ThreadingHTTPServer(('127.0.0.1', REMOTE_PORT), type('RemoteHandler', (Handler,), {'remote': True}))
+        rsrv.daemon_threads = True
+        threading.Thread(target=rsrv.serve_forever, daemon=True).start()
+        print(f'remote (VPS) copy on 127.0.0.1:{REMOTE_PORT}: login required for everything', flush=True)
+    except OSError as e:
+        print(f'remote copy off: {e}', flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
