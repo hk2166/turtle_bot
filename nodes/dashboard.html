@@ -192,8 +192,12 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 <div class="grid" id="view-manual" style="display:none">
  <div class="panel">
   <h2>EYES — drive by sight</h2>
-  <div id="camwrap2" style="flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#000;border:1px solid var(--line)">
+  <div id="camwrap2" style="flex:3;min-height:0;display:flex;align-items:center;justify-content:center;background:#000;border:1px solid var(--line)">
    <img id="cam2" style="max-width:100%;max-height:100%" alt="">
+  </div>
+  <small style="flex:none;margin:6px 0 2px">☺ FACE CAMERA <span id="mfacenote"></span></small>
+  <div id="mfacewrap" style="flex:2;min-height:0;display:flex;align-items:center;justify-content:center;background:#000;border:1px solid var(--line)">
+   <img id="mface" style="max-width:100%;max-height:100%" alt="">
   </div>
  </div>
  <div class="panel">
@@ -668,22 +672,23 @@ async function aRun(){
 document.getElementById('acmdtext').addEventListener('keydown',e=>{if(e.key=='Enter')aSend(false)});
 function feed(on){feedOn=on;syncFeeds()}
 // EYES source: the mast Brio, the face HIKVISION (boxed + named by the face service), or both (PiP)
-// default MAST: the face view runs the face model (~a quarter of a core per open tab), so it's opt-in here;
-// QUEUE & PLACES always shows it
-let camSrc=(()=>{try{return localStorage.getItem('camSrc')||'mast'}catch(e){return 'mast'}})();
-function setSrc(s){camSrc=s;try{localStorage.setItem('camSrc',s)}catch(e){}
+// default BOTH (asked for 2026-10-30); the face view runs the face model (~a quarter of a core while any
+// tab shows it), so MAST alone is the lighter choice. MANUAL DRIVE and QUEUE & PLACES show it too.
+let camSrc=(()=>{try{return localStorage.getItem('camSrc2')||'both'}catch(e){return 'both'}})();
+function setSrc(s){camSrc=s;try{localStorage.setItem('camSrc2',s)}catch(e){}
  ['mast','face','both'].forEach(k=>document.getElementById('src'+k).classList.toggle('on',k==s));
  document.getElementById('facenote').textContent='';syncFeeds()}
 // Live feeds are MJPEG streams: the robot pushes each frame the moment it exists, no per-frame requests.
 // An <img> holds a stream only while it is on screen; otherwise it points at a blank image, which closes
 // the connection (and the robot stops decoding that camera a few seconds later).
-const BLANK='data:image/gif;base64,R0lGODlhAQABAAAAACw=', FEEDS=['cam','facepip','cam2','qface'], feedRetry={};
+const BLANK='data:image/gif;base64,R0lGODlhAQABAAAAACw=', FEEDS=['cam','facepip','cam2','mface','qface'], feedRetry={};
 function wantFeed(id){
  if(document.hidden)return '';
  const m=view=='mission'&&feedOn;
  if(id=='cam')return m?(camSrc=='face'?'/face_stream.mjpg':'/eyes_stream.mjpg'):'';
  if(id=='facepip')return m&&camSrc=='both'?'/face_stream.mjpg':'';
  if(id=='cam2')return view=='manual'?'/eyes_stream.mjpg':'';
+ if(id=='mface')return view=='manual'?'/face_stream.mjpg':'';
  if(id=='qface')return view=='queue'?'/face_stream.mjpg':'';
  return ''}
 function syncFeeds(){
@@ -697,14 +702,14 @@ function syncFeeds(){
 FEEDS.forEach(id=>{const el=document.getElementById(id);
  el.addEventListener('load',()=>{const s=el.dataset.stream||'';if(!s)return;feedRetry[id]=0;
   if(id=='facepip')el.style.display='';
-  if(s.startsWith('/face'))document.getElementById(id=='qface'?'qfacenote':'facenote').textContent='';
+  if(s.startsWith('/face'))document.getElementById(id=='qface'?'qfacenote':id=='mface'?'mfacenote':'facenote').textContent='';
   if(id=='qface')document.getElementById('qfaceoff').style.display='none';
   if(id=='cam')document.getElementById('camoff').style.display='none'});
  el.addEventListener('error',()=>{const s=el.dataset.stream||'';if(!s)return;    // stream failed: say why, retry in 3 s
   el.dataset.stream='';feedRetry[id]=Date.now()+3000;if(id=='facepip')el.style.display='none';
   const face=s.startsWith('/face');
   fetch(face?'/face_frame.jpg':'/frame.jpg').then(r=>r.ok?'reconnecting…':r.text()).then(t=>{t=String(t).slice(0,60);
-   if(face)document.getElementById(id=='qface'?'qfacenote':'facenote').textContent=(id=='qface'?'· ':'face cam: ')+t;
+   if(face)document.getElementById(id=='qface'?'qfacenote':id=='mface'?'mfacenote':'facenote').textContent=(id=='facepip'||id=='cam'?'face cam: ':'· ')+t;
    if(id=='qface'){const o=document.getElementById('qfaceoff');o.style.display='';o.textContent=t}
    if(id=='cam'&&!face){const o=document.getElementById('camoff');o.style.display='';o.textContent=t}}).catch(()=>{})})});
 document.addEventListener('visibilitychange',syncFeeds);
