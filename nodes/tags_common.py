@@ -21,9 +21,26 @@ BRIO100_DFOV_DEG = 58.0      # Logitech spec (diagonal); only used until tools/c
 
 
 # --------------------------------------------------------------------------------------------- camera
-def open_camera(device='/dev/video0', width=1280, height=720, fps=30):
+def brio_device():
+    """The mast camera's device. /dev/videoN numbers follow plug order: since the face camera was added,
+    a re-plug made the HIKVISION /dev/video0 and camera_node opened it instead of the Brio (2026-10-30).
+    So: CAMERA_DEV from config/robot.env (a stable /dev/v4l/by-id name), else any Logitech by-id capture
+    node, else /dev/video0 as before."""
+    import glob
+    import re
+    try:
+        m = re.search(r'^CAMERA_DEV=(\S+)', open(os.path.join(PROJECT_DIR, 'config', 'robot.env')).read(), re.M)
+        if m and os.path.exists(m.group(1)):
+            return m.group(1)
+    except OSError:
+        pass
+    found = sorted(glob.glob('/dev/v4l/by-id/usb-046d_*-video-index0'))
+    return found[0] if found else '/dev/video0'
+
+
+def open_camera(device=None, width=1280, height=720, fps=30):
     """The Brio gives 1280x720 at 30 fps only as MJPG (raw YUYV is 5 fps at that size)."""
-    cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+    cap = cv2.VideoCapture(device or brio_device(), cv2.CAP_V4L2)
     if not cap.isOpened():
         return None
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
@@ -34,9 +51,9 @@ def open_camera(device='/dev/video0', width=1280, height=720, fps=30):
     return cap
 
 
-def camera_busy(device='/dev/video0'):
+def camera_busy(device=None):
     """PIDs (as text) of other processes holding the camera, '' if it's free."""
-    real = os.path.realpath(device)
+    real = os.path.realpath(device or brio_device())
     pids = []
     for pid in filter(str.isdigit, os.listdir('/proc')):
         if int(pid) == os.getpid():

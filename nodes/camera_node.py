@@ -35,7 +35,9 @@ import tags_common as tc
 class CameraNode(Node):
     def __init__(self):
         super().__init__('camera_node')
-        self.device = self.declare_parameter('device', '/dev/video0').value
+        # '' = the Brio by its stable name (tags_common.brio_device): /dev/video0 is whichever camera
+        # enumerated first, which was the face camera after a re-plug (2026-10-30)
+        self.device = self.declare_parameter('device', '').value or tc.brio_device()
         self.width = int(self.declare_parameter('width', 1280).value)
         self.height = int(self.declare_parameter('height', 720).value)
         self.fps = int(self.declare_parameter('fps', 30).value)
@@ -50,6 +52,13 @@ class CameraNode(Node):
         # A clean (no tag overlay), larger still for the vision features (hazard spotter, blocked / arrival
         # checks, "what do you see": nodes/dashboard.py -> nodes/command_service.py). 1 Hz, only encoded
         # while someone subscribes; reuses the frame already decoded for detection (2026-10-29).
+        # The Brio is mounted upside down (2026-10-30): turn the PICTURES upright (preview, vision snapshot).
+        # Tag detection keeps the raw image; the TF's camera roll (CAMERA_ROLL) accounts for the mount.
+        rot = int(self.declare_parameter('image_rotate', 0).value) % 360
+        self.image_rotate = {0: None, 90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180,
+                             270: cv2.ROTATE_90_COUNTERCLOCKWISE}.get(rot)
+        if rot:
+            self.get_logger().info(f'preview + snapshot turned {rot} deg (detection uses the raw image)')
         snapshot_hz = float(self.declare_parameter('snapshot_hz', 1.0).value)
         self.snapshot_width = int(self.declare_parameter('snapshot_width', 960).value)
         # Capture → read latency of the MJPG pipeline; the stamp is moved back by this much.
@@ -185,6 +194,8 @@ class CameraNode(Node):
         s = min(1.0, self.snapshot_width / float(img.shape[1]))
         out = cv2.resize(img, (int(img.shape[1] * s), int(round(img.shape[0] * s))),
                          interpolation=cv2.INTER_AREA) if s < 1.0 else img
+        if self.image_rotate is not None:
+            out = cv2.rotate(out, self.image_rotate)
         ok, jpg = cv2.imencode('.jpg', out, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if not ok:
             return
@@ -209,6 +220,8 @@ class CameraNode(Node):
             cv2.polylines(small, [pts], True, (0, 255, 0) if good else (0, 165, 255), 2)
             cv2.putText(small, str(tag_id), tuple(int(v) for v in pts[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                         (0, 255, 0) if good else (0, 165, 255), 2)
+        if self.image_rotate is not None:                 # after the overlay, so the tag boxes turn with it
+            small = cv2.rotate(small, self.image_rotate)
         ok, jpg = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 60])
         if not ok:
             return

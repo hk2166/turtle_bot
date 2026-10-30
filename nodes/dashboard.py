@@ -39,6 +39,18 @@ from tf2_ros import Buffer, TransformListener
 import fleet
 import face_client   # talks to the warm face service; returns ok:false (never raises) when it's off
 import command_client  # voice/typed commands -> trip plans (nodes/command_service.py, Claude)
+def _brio_rotate():
+    """CAMERA_IMAGE_ROTATE from config/robot.env (the run scripts source it but don't export it)."""
+    try:
+        m = re.search(r'^CAMERA_IMAGE_ROTATE=(\d+)', open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'robot.env')).read(), re.M)
+        deg = int(m.group(1)) % 360 if m else 0
+    except (OSError, ValueError):
+        deg = 0
+    return {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}.get(deg)
+
+
+BRIO_ROTATE = _brio_rotate()
 COMMAND_GAP = float(os.environ.get('COMMAND_GAP', '4'))
 COMMAND_DAILY_CAP = int(os.environ.get('COMMAND_DAILY_CAP', '300'))
 HTTPS_PORT = int(os.environ.get('DASH_HTTPS_PORT', '8444'))   # same pages over https: browsers only give
@@ -244,6 +256,8 @@ class Camera:
                 if not ok:
                     break
                 img = cv2.resize(img, (640, 360), interpolation=cv2.INTER_AREA)
+                if BRIO_ROTATE is not None:          # mounted upside down: same turn camera_node applies
+                    img = cv2.rotate(img, BRIO_ROTATE)
                 ok, jpg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 if ok:
                     with self.lock:

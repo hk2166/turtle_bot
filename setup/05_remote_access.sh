@@ -111,12 +111,18 @@ if ufw status 2>/dev/null | grep -q 'Status: active'; then
   ufw allow 22/tcp >/dev/null; ufw allow 3389/tcp >/dev/null; ufw allow 5900/tcp >/dev/null
   ufw allow 8765/tcp >/dev/null; ufw allow 8088/tcp >/dev/null
   ok "ufw: 22 (SSH), 3389 (xrdp), 5900 (VNC), 8765 (Foxglove) and 8088 (dashboard) open"
-install -d -o "$U" -g "$U" "/home/$U/.config/wireplumber/wireplumber.conf.d"
-install -m 0644 -o "$U" -g "$U" "$(dirname "$0")/wireplumber-no-camera.conf" \
-  "/home/$U/.config/wireplumber/wireplumber.conf.d/99-campus-bot-no-camera.conf"
 else
   info "ufw not active: nothing to open"
 fi
+# Keep PipeWire off the cameras (the robot's software opens them itself). Both formats: WirePlumber 0.5
+# reads wireplumber.conf.d/*.conf, 0.4 (Ubuntu 24.04) reads main.lua.d/*.lua. Until 2026-10-30 only the
+# 0.5 file was installed (and only when ufw was active), so on this Pi it never took effect.
+install -d -o "$U" -g "$U" "/home/$U/.config/wireplumber/wireplumber.conf.d" "/home/$U/.config/wireplumber/main.lua.d"
+install -m 0644 -o "$U" -g "$U" "$(dirname "$0")/wireplumber-no-camera.conf" \
+  "/home/$U/.config/wireplumber/wireplumber.conf.d/99-campus-bot-no-camera.conf"
+install -m 0644 -o "$U" -g "$U" "$(dirname "$0")/wireplumber-no-camera.lua" \
+  "/home/$U/.config/wireplumber/main.lua.d/51-campus-bot-no-camera.lua"
+ok "PipeWire camera monitoring off (WirePlumber 0.4 + 0.5 config)"
 
 log "How to connect"
 IP="$(ip -4 -o addr show "${DEV:-wlan0}" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)"

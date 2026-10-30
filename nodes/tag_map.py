@@ -246,10 +246,14 @@ class TagMap(Node):
     # ------------------------------------------------------------ camera tilt self-check
     @staticmethod
     def trimmed(T_base_cam, deg):
-        """Camera pitched further down by deg: a rotation about the body's y axis, which is the
-        optical frame's -x axis, so T_base_cam @ Rx_optical(-deg)."""
+        """Camera pitched further down by deg: a rotation about the BODY's y axis, applied in the body
+        frame (pre-multiplied). It used to be T @ Rx_optical(-deg), which assumed the optical -x axis is
+        the body's y axis: true for an upright camera, reversed for the upside-down mount (2026-10-30),
+        where it tilted the camera the wrong way (checked: +1 deg trim gave -1.00 deg; now +1.00 deg either
+        way up). Upright, the pitch change is the same as before (+1.00 deg); the old version rotated about
+        the camera's own sideways axis, ~2 deg (its yaw) off the body's, so the matrices differ slightly."""
         T = T_base_cam.copy()
-        T[:3, :3] = T_base_cam[:3, :3] @ tc.rpy_to_mat(-math.radians(deg), 0.0, 0.0)
+        T[:3, :3] = tc.rpy_to_mat(0.0, math.radians(deg), 0.0) @ T_base_cam[:3, :3]
         return T
 
     def load_trim(self):

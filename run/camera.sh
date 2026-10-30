@@ -10,6 +10,9 @@ set -uo pipefail
 # shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 DEV="${CAMERA_DEV:-/dev/video0}"
+# a different Brio (other serial) in place: fall back to any Logitech camera by its stable name
+[[ -e "$DEV" ]] || DEV="$(ls /dev/v4l/by-id/usb-046d_*-video-index0 2>/dev/null | head -1)"
+DEV="${DEV:-/dev/video0}"
 NODE='^([^ ]*/)?(python3 ([^ ]*/)?camera_node\.py|v4l2_camera_node)( |$)'
 
 case "${1:-on}" in
@@ -27,7 +30,8 @@ case "${1:-on}" in
       err "$DEV is in use by:"; ps -o pid=,args= -p "$holders" | cut -c1-100 | sed 's/^/        /' >&2; exit 1
     fi
     start_bg camera python3 "$PROJECT_DIR/nodes/camera_node.py" --ros-args \
-      -p device:="$DEV" -p width:="$CAMERA_WIDTH" -p height:="$CAMERA_HEIGHT" -p tag_size:="$TAG_SIZE"
+      -p device:="$DEV" -p width:="$CAMERA_WIDTH" -p height:="$CAMERA_HEIGHT" -p tag_size:="$TAG_SIZE" \
+      -p image_rotate:="${CAMERA_IMAGE_ROTATE:-0}"
     if wait_topic /tags 30; then ok "camera on ($DEV → /tags, preview /camera/image/compressed)"
     else err "camera started but no /tags: see $LOG_DIR/camera.log"; stop_bg camera; exit 1; fi
     if [[ ! -f "$PROJECT_DIR/config/camera_intrinsics.yaml" ]]; then
