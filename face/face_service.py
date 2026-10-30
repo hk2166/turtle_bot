@@ -43,7 +43,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import verify as verify_mod  # noqa: E402
 import identify as identify_mod  # noqa: E402
-from engine import Engine, best_score  # noqa: E402
+from engine import Engine, best_score, MIN_FACE_PX  # noqa: E402
 from face_store import FaceStore  # noqa: E402
 import enroll_session  # noqa: E402
 
@@ -206,7 +206,7 @@ class Service:
         self.cam = Cam(cam_device(), CAM_W, CAM_H, CAM_IDLE, CAM_FPS)
         self.viewers, self.view_t = 0, 0.0      # who is watching the preview (drives the annotator)
         self.vlock = threading.Lock()
-        self.ann = {'t': 0.0, 'bbox': None, 'label': '', 'known': False, 'w': 1}
+        self.ann = {'t': 0.0, 'faces': [], 'w': 1, 'hint': ''}
         self.ann_thread = None
         self.enc_lock = threading.Lock()
         self.enc = {}                           # annotate -> (seq, jpeg): one encode per frame, shared
@@ -266,10 +266,14 @@ class Service:
             return 500, {'ok': False, 'reason': 'error', 'error': str(e)}
 
     # ---------------------------------------------------------------- live preview for the dashboard
-    # s between recognitions on the preview. Each costs ~350 ms of CPU (2 threads), so 1.5 s keeps one
-    # viewer near a quarter of a core; at 0.7 s with 4 threads it was ~90% (measured 2026-10-26).
-    ANN_EVERY = 1.5
-    ANN_KEEP = 2.5        # s a box stays drawn after its recognition
+    # The live preview: a detector-only pass every ANN_TRACK_EVERY s keeps the boxes on the faces as
+    # people move (~50-170 ms on the Pi), and a full recognition every ANN_EVERY s (or at once when a
+    # new face walks in) puts names on them (~70 ms more per face). Before 2026-10-30 one recognition
+    # every 1.5 s boxed only the largest face and left the box behind for 2.5 s, so it looked lost.
+    ANN_EVERY = float(os.environ.get('FACE_NAME_EVERY', '1.5'))
+    ANN_TRACK_EVERY = float(os.environ.get('FACE_TRACK_EVERY', '0.35'))
+    ANN_IDLE_EVERY = 1.0  # s between passes while nobody is in view (most of the time: saves the CPU)
+    ANN_KEEP = 1.0        # s boxes stay drawn after the last pass that saw them
 
     def _roster_cached(self):
         t, names, embs = getattr(self, '_roster_c', (0.0, [], []))
@@ -289,37 +293,78 @@ class Service:
                 self.ann_thread = threading.Thread(target=self._annotator, daemon=True)
                 self.ann_thread.start()
 
+    def _label(self, f):
+        """(label, known) for one detected face from a recognition pass."""
+        w = min(f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1])
+        if w < MIN_FACE_PX or getattr(f, 'embedding', None) is None:
+            return 'come closer', False
+        names, embs = self._roster_cached()
+        if not names:
+            return 'nobody enrolled', False
+        emb = f.normed_embedding.astype(np.float32)
+        scores = [best_score(emb, e) for e in embs]
+        i = int(np.argmax(scores))
+        second = sorted(scores)[-2] if len(scores) > 1 else -1.0
+        if scores[i] >= identify_mod.THRESHOLD and scores[i] - second >= identify_mod.MARGIN:
+            return f'{names[i]}  {scores[i]:.2f}', True
+        return f'not recognised  {scores[i]:.2f}', False
+
+    @staticmethod
+    def _match(box, prev):
+        """The previous face this box most likely is (centre within ~0.7 face widths), else None."""
+        cx, cy, w = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2, box[2] - box[0]
+        best, bd = None, 0.7 * max(w, 1.0)
+        for p in prev:
+            pb = p['bbox']
+            d = np.hypot((pb[0] + pb[2]) / 2 - cx, (pb[1] + pb[3]) / 2 - cy)
+            if d < bd:
+                best, bd = p, d
+        return best
+
     def _annotator(self):
-        """Recognise the face in view every ANN_EVERY s while someone watches, off the video path, so
-        the stream never waits for the model. Skips a round when a delivery check holds the model."""
+        """Box and name every face in view while someone watches, off the video path, so the stream
+        never waits for the model. Skips a pass when a delivery check holds the model."""
+        last_name, flips, nofaces = 0.0, 0, 0
         while self.viewers > 0 or time.time() - self.view_t < 3.0:
-            time.sleep(self.ANN_EVERY)
+            time.sleep(self.ANN_TRACK_EVERY if nofaces < 3 else self.ANN_IDLE_EVERY)
             if not self.ready() or not self.infer.acquire(blocking=False):
                 continue
             try:
                 frame, _seq = self.cam.latest(timeout=1.0)
-                a = self.engine.analyze(frame, embed=True)
+                det = self.engine.app.det_model
+                bboxes, _k = det.detect(frame, max_num=0, metric='default')
+                boxes = [] if bboxes is None else [[float(v) for v in b[:4]] for b in bboxes]
+                prev = self.ann.get('faces', [])
+                matched = [self._match(b, prev) for b in boxes]
+                faces = None
+                # names: on schedule, or right away when someone new appears
+                if boxes and (time.time() - last_name >= self.ANN_EVERY or any(m is None for m in matched)):
+                    faces = self.engine.app.get(frame)
+                    last_name = time.time()
+                # no face for a while: is the picture upside down? (camera remounted, rotate: not updated)
+                hint = self.ann.get('hint', '')
+                if boxes:
+                    nofaces, flips, hint = 0, 0, ''
+                else:
+                    nofaces += 1
+                    if nofaces % 3 == 0:
+                        fb, _ = det.detect(cv2.rotate(frame, cv2.ROTATE_180), max_num=0, metric='default')
+                        flips = flips + 1 if fb is not None and len(fb) and float(fb[:, 4].max()) > 0.6 else 0
+                        if flips >= 2:
+                            hint = 'faces look UPSIDE DOWN: fix rotate in config/face_cam.yaml'
             except RuntimeError:
                 continue
             finally:
                 self.infer.release()
-            label, known = '', False
-            if a['emb'] is not None:
-                names, embs = self._roster_cached()
-                if names:
-                    scores = [best_score(a['emb'], e) for e in embs]
-                    i = int(np.argmax(scores))
-                    second = sorted(scores)[-2] if len(scores) > 1 else -1.0
-                    if scores[i] >= identify_mod.THRESHOLD and scores[i] - second >= identify_mod.MARGIN:
-                        label, known = f'{names[i]}  {scores[i]:.2f}', True
-                    else:
-                        label = f'not recognised  {scores[i]:.2f}'
-                else:
-                    label = 'nobody enrolled'
-            elif a['bbox'] is not None:
-                label = 'face unclear'
-            self.ann = {'t': time.time(), 'bbox': a['bbox'], 'label': label, 'known': known,
-                        'w': frame.shape[1]}
+            out = []
+            if faces is not None:
+                for f in faces:
+                    label, known = self._label(f)
+                    out.append({'bbox': [float(v) for v in f.bbox], 'label': label, 'known': known})
+            else:
+                for b, m in zip(boxes, matched):
+                    out.append({'bbox': b, 'label': m['label'] if m else '', 'known': bool(m and m['known'])})
+            self.ann = {'t': time.time(), 'faces': out, 'w': frame.shape[1], 'hint': hint}
 
     def _encoded(self, frame, seq, annotate):
         """JPEG of this frame (downscaled, boxed); encoded once per frame however many viewers."""
@@ -331,17 +376,22 @@ class Service:
             s = min(1.0, self.PREVIEW_W / w)
             small = cv2.resize(frame, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA) if s < 1 else frame.copy()
             ann = self.ann
-            if annotate and ann.get('bbox') is not None and time.time() - ann['t'] < self.ANN_KEEP:
+            if annotate and time.time() - ann['t'] < self.ANN_KEEP:
                 k = small.shape[1] / max(ann.get('w', w), 1)
-                x1, y1, x2, y2 = (int(v * k) for v in ann['bbox'])
-                col = (80, 200, 60) if ann['known'] else (0, 170, 255)          # BGR: green / amber
-                cv2.rectangle(small, (x1, y1), (x2, y2), col, 2)
-                if ann['label']:
-                    (tw, th), _ = cv2.getTextSize(ann['label'], cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                    ty = max(th + 10, y1)
-                    cv2.rectangle(small, (x1, ty - th - 10), (x1 + tw + 10, ty), col, -1)
-                    cv2.putText(small, ann['label'], (x1 + 5, ty - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                                (0, 0, 0), 2, cv2.LINE_AA)
+                for f in ann.get('faces', []):
+                    x1, y1, x2, y2 = (int(v * k) for v in f['bbox'])
+                    col = (80, 200, 60) if f['known'] else (0, 170, 255)          # BGR: green / amber
+                    cv2.rectangle(small, (x1, y1), (x2, y2), col, 2)
+                    if f['label']:
+                        (tw, th), _ = cv2.getTextSize(f['label'], cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+                        ty = max(th + 10, y1)
+                        cv2.rectangle(small, (x1, ty - th - 10), (x1 + tw + 10, ty), col, -1)
+                        cv2.putText(small, f['label'], (x1 + 5, ty - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                                    (0, 0, 0), 2, cv2.LINE_AA)
+            if annotate and ann.get('hint'):
+                cv2.rectangle(small, (0, 0), (small.shape[1], 26), (0, 0, 160), -1)
+                cv2.putText(small, ann['hint'], (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+                            cv2.LINE_AA)
             ok, jpg = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 72])
             if not ok:
                 raise RuntimeError('encode failed')
