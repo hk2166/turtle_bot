@@ -35,6 +35,7 @@ import rclpy
 import yaml
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
+from std_msgs.msg import String
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -96,6 +97,7 @@ class TagMap(Node):
             self.tags = self.load(self.tags_file)
             self.pub_init = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
             self.pub_fix = self.create_publisher(PoseWithCovarianceStamped, '/tag_pose', 10)
+            self.pub_event = self.create_publisher(String, '/tag_event', 10)   # the dashboard's log
             self.fixes = deque(maxlen=10)   # (monotonic time, T_map_odom implied by the camera, sd_xy)
             self.last_init = 0.0
             self.publish_markers()
@@ -372,8 +374,10 @@ class TagMap(Node):
         self.publish_pose(self.pub_init, mx, my, myaw, stamp, max(sd, 0.1), max(sd_yaw, 0.05))
         self.last_init = now
         self.fixes.clear()
-        self.get_logger().warning(f'{why}: pose set from the camera: x {mx:.2f} y {my:.2f} '
-                                  f'yaw {math.degrees(myaw):.0f}° ({len(obs)} tag(s) in view, nearest {nearest:.1f} m)')
+        msg = (f'{why}: pose set from the camera: x {mx:.2f} y {my:.2f} '
+               f'yaw {math.degrees(myaw):.0f}° ({len(obs)} tag(s) in view, nearest {nearest:.1f} m)')
+        self.get_logger().warning(msg)
+        self.pub_event.publish(String(data=msg))
 
     def publish_pose(self, pub, x, y, yaw, stamp, sd_xy, sd_yaw):
         m = PoseWithCovarianceStamped()

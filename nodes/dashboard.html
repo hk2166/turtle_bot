@@ -533,11 +533,19 @@ function draw(){
  if(eraseMode&&eraseCur){const[a,b]=w2p(eraseCur[0],eraseCur[1]);
   cx.strokeStyle='#ffffff';cx.setLineDash([3*L,3*L]);cx.lineWidth=1.5*L;cx.beginPath();
   cx.arc(a,b,ERASE_R*Math.hypot(M.A[0][0],M.A[1][0]),0,2*Math.PI);cx.stroke();cx.setLineDash([])}
+ drawTags(L);
  drawPlaces(L);
  if(fencePts.length){cx.strokeStyle='#ff5566';cx.setLineDash([4*L,3*L]);cx.lineWidth=2*L;cx.beginPath();
   fencePts.forEach((p,i)=>{const[a,b]=w2p(p[0],p[1]);i?cx.lineTo(a,b):cx.moveTo(a,b);});cx.stroke();
   cx.setLineDash([]);fencePts.forEach(p=>{const[a,b]=w2p(p[0],p[1]);cx.strokeRect(a-3*L,b-3*L,6*L,6*L)})}
 }
+// AprilTags of this map (orange; bright yellow while the camera sees them), with the way each one faces
+function drawTags(L){const T=S.tags;if(!T||!T.known)return;
+ cx.font=`${10*L}px monospace`;
+ T.known.forEach(([id,x,y,f])=>{const[a,b]=w2p(x,y),[c,d]=w2p(x+0.35*Math.cos(f),y+0.35*Math.sin(f));
+  const on=(T.ids||[]).includes(String(id));cx.strokeStyle=cx.fillStyle=on?'#ffe14d':'#ff9f1a';
+  cx.lineWidth=(on?2.5:1.5)*L;cx.fillRect(a-3.5*L,b-3.5*L,7*L,7*L);
+  cx.beginPath();cx.moveTo(a,b);cx.lineTo(c,d);cx.stroke();cx.fillText(String(id),a+5*L,b-5*L)})}
 async function handleTap(e){
  if(!M)return;
  const r=cv.getBoundingClientRect();const[x,y]=p2w(e.clientX-r.left,e.clientY-r.top);
@@ -741,6 +749,16 @@ async function discardMap(){if(confirm('Discard this mapping run?')){await post(
 function rdchip(cls,label,val,hint){
  return `<span class="chip ${cls}" title="${(hint||'').replace(/"/g,'&quot;')}"><span class="dot"></span>${label}`+
         (val?' <small>'+val+'</small>':'')+'</span>'}
+function tagChip(T,add){
+ if(!T)return;const ago=x=>x==null?'never':x<90?Math.round(x)+' s ago':Math.round(x/60)+' min ago';
+ const n=(T.known||[]).length;
+ if(!n)return add('warn','Tags','none','no AprilTags recorded for this map: the robot positions itself by lidar only');
+ if(!T.running)return add('warn','Tags','off',`${n} tags known, but tag positioning isn't running (it starts with NAVIGATE)`);
+ if(T.ids&&T.ids.length)return add('ok','Tags','seeing '+T.ids.join(','),'the camera sees tag(s) now: the robot checks its position against them');
+ if(T.seen_ago!=null&&T.seen_ago<60&&(T.fix_ago==null||T.fix_ago>T.seen_ago+5))
+  return add('warn','Tags','seen, not used',"tags were seen but their readings didn't fit: re-measure the camera angle (tools/camera_pose.py)");
+ add('ok','Tags',n+' known',`last tag seen ${ago(T.seen_ago)}, last position check ${ago(T.fix_ago)}`+
+  (T.event?` · last correction ${ago(T.event_ago)}`:'')+' · works within 4 m of a tag')}
 function renderReady(s){
  const C=[];let worst='ok';
  const add=(cls,label,val,hint)=>{C.push(rdchip(cls,label,val,hint));
@@ -754,6 +772,7 @@ function renderReady(s){
      s.pose?'robot is localized':'robot does not know where it is — SET POSE / RESET POSE');
  add(s.cam_ok?'ok':'bad','Cam',s.cam_ok?'live':'off',
      s.cam_ok?'camera streaming':'no camera frames in the last 3 s');
+ tagChip(s.tags,add);
  if(s.handbrake)add('warn','Brake','PARKED','handbrake on: the robot will not move until you release it');
  const v=s.vision||{}, cm=s.commands||{};
  if(!cm.key)add('warn','Vision','no key','no Anthropic API key: voice commands and vision are off');
@@ -788,7 +807,7 @@ function renderReady(s){
  vb.textContent=worst=='ok'?'✓ READY':worst=='warn'?'● CHECK':'✕ NOT READY';
  document.getElementById('rdchips').innerHTML=C.join('');
 }
-let lastJob='',lastFit='',mapMode=false;
+let lastJob='',lastFit='',mapMode=false,lastTagEv=null;
 setInterval(async()=>{try{
  const rs=await fetch('/api/state');if(rs.status==401){location.href='/login';return}
  netOk(true);
@@ -801,7 +820,8 @@ setInterval(async()=>{try{
  document.getElementById('fit').textContent=s.fit||'';
  if(s.nav!=lastNav){log('nav: '+s.nav);lastNav=s.nav}
  if(s.job&&s.job!=lastJob){log(s.job);lastJob=s.job}
- if(s.fit&&s.fit!=lastFit){log(s.fit);lastFit=s.fit}      // queue + vision events (hazards, blocked, arrivals)
+ if(s.fit&&s.fit!=lastFit){log(s.fit);lastFit=s.fit}
+ {const te=s.tags&&s.tags.event;if(te&&te!=lastTagEv){if(lastTagEv!==null||s.tags.event_ago<10)log('📍 '+te);lastTagEv=te}}      // queue + vision events (hazards, blocked, arrivals)
  document.getElementById('hazb').classList.toggle('on',!!(s.vision&&s.vision.hazard_on));
  paintBrake();
  document.getElementById('fit').textContent=s.job||s.fit||'';

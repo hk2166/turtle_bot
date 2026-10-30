@@ -135,6 +135,26 @@ class Ros(Node):
         self._SpeedLimit = SpeedLimit
         self.pub_speed = self.create_publisher(SpeedLimit, 'speed_limit', 10)
         self.create_subscription(GoalStatusArray, '/navigate_to_pose/_action/status', self.on_status, 10)
+        # AprilTags (nodes/tag_map.py, 2026-10-30): what the camera sees, the readings tag_map trusted, and
+        # the times it set the robot's pose from them (shown on the readiness panel and the log)
+        self.tags = {'seen_t': 0.0, 'ids': [], 'fix_t': 0.0, 'fix': None, 'event': '', 'event_t': 0.0,
+                     'seen_n': 0, 'fix_n': 0}
+        from vision_msgs.msg import Detection3DArray
+        from std_msgs.msg import String
+
+        def on_tags(m):
+            ids = sorted({d.results[0].hypothesis.class_id for d in m.detections if d.results})
+            if ids:
+                self.tags.update(seen_t=time.time(), ids=ids)
+                self.tags['seen_n'] += 1
+
+        def on_fix(m):
+            p = m.pose.pose
+            self.tags.update(fix_t=time.time(), fix=[p.position.x, p.position.y])
+            self.tags['fix_n'] += 1
+        self.create_subscription(Detection3DArray, '/tags', on_tags, 10)
+        self.create_subscription(PoseWithCovarianceStamped, '/tag_pose', on_fix, 10)
+        self.create_subscription(String, '/tag_event', lambda m: self.tags.update(event=m.data, event_t=time.time()), 10)
         # Cancel every Nav2 goal (the slip watcher's stop): stop() can't be used there, because it sends a
         # "come to where you are" goal and during a slip "where you are" is the drifted, wrong pose.
         from action_msgs.srv import CancelGoal
@@ -803,6 +823,26 @@ GIF = (b'GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01
        b',\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;')
 
 
+def tag_status(ros):
+    """The map's tags (for drawing) and what the camera did with them lately."""
+    t, now = ros.tags, time.time()
+    try:
+        st = os.stat(os.path.join(PROJECT, 'maps', f'{AREA}_tags.yaml'))
+        key = (AREA, st.st_mtime)
+        if getattr(tag_status, 'key', None) != key:
+            d = yaml.safe_load(open(os.path.join(PROJECT, 'maps', f'{AREA}_tags.yaml'))) or {}
+            tag_status.known = [[int(i), round(v['x'], 3), round(v['y'], 3), round(math.radians(v.get('facing_deg', 0)), 3)]
+                                for i, v in (d.get('tags') or {}).items()]
+            tag_status.key = key
+    except (OSError, yaml.YAMLError, KeyError, TypeError, ValueError):
+        tag_status.known, tag_status.key = [], None
+    ago = lambda x: round(now - x, 1) if x else None
+    return {'known': tag_status.known, 'ids': t['ids'] if now - t['seen_t'] < 3 else [],
+            'seen_ago': ago(t['seen_t']), 'fix_ago': ago(t['fix_t']), 'seen_n': t['seen_n'], 'fix_n': t['fix_n'],
+            'event': t['event'], 'event_ago': ago(t['event_t']),
+            'running': pid_alive('tags')}
+
+
 def remote_url():
     try:
         m = re.search(r'^VPS_URL=(\S+)', open(VPS_ENV).read(), re.M)
@@ -1097,7 +1137,7 @@ class Handler(BaseHTTPRequestHandler):
                  'places': fleet.load_places(AREA), 'queue': self.queue.admin_view(),
                  'cam_ok': self.ros.cam_jpg is not None and time.time() - self.ros.cam_t < 3.0,
                  'face': face_health(), 'commands': command_health(), 'vision': self.vision.status(),
-                 'handbrake': handbrake_on(), **s}
+                 'handbrake': handbrake_on(), 'tags': tag_status(self.ros), **s}
             self.send(200, 'application/json', json.dumps(d).encode())
         elif self.path.startswith('/api/logs'):
             name = (self.path.split('f=')[1].split('&')[0] if 'f=' in self.path else 'nav')
