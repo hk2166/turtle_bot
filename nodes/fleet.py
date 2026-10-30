@@ -181,6 +181,8 @@ class Navigator:
         self.seq += 1
         seq = self.seq
         self.result, self.handle = None, None
+        if hasattr(self.node, 'goal'):
+            self.node.goal = None     # a queue goal replaces any admin map goal (dashboard's get-around)
         names = {GoalStatus.STATUS_SUCCEEDED: 'succeeded', GoalStatus.STATUS_ABORTED: 'aborted',
                  GoalStatus.STATUS_CANCELED: 'canceled'}
 

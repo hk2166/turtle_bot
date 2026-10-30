@@ -268,8 +268,19 @@ map_saver:
 planner_server:
   ros__parameters:
     expected_planner_frequency: 20.0
-    planner_plugins: ["GridBased"]
+    # 2026-10-30: "Straight" (Theta*: any-angle, so a clear stretch is ONE straight line instead of NavFn's
+    # wavy grid path) is tried first; the behaviour tree falls back to "GridBased" (NavFn, which has a goal
+    # tolerance) when Theta* can't plan, e.g. a goal right against a desk. Both plan on the global costmap,
+    # so lidar obstacles and the camera's hazard marks shape the line either way.
+    planner_plugins: ["Straight", "GridBased"]
     costmap_update_timeout: 1.0
+    Straight:
+      plugin: "nav2_theta_star_planner::ThetaStarPlanner"
+      how_many_corners: 8
+      w_euc_cost: 1.0
+      w_traversal_cost: 2.0        # higher keeps the line further from obstacles (inflation cost)
+      use_final_approach_orientation: false
+      allow_unknown: true
     GridBased:
       plugin: "nav2_navfn_planner::NavfnPlanner"
       tolerance: 0.5

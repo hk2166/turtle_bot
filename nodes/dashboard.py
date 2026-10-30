@@ -31,7 +31,7 @@ sys_path_added = True
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
-from nav_msgs.msg import OccupancyGrid, Path
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from sensor_msgs.msg import CompressedImage, PointCloud2, PointField
 from nav2_msgs.srv import LoadMap
 from action_msgs.msg import GoalStatus, GoalStatusArray
@@ -106,6 +106,8 @@ class Ros(Node):
         self.nav_state = 'IDLE'
         self.goal = None
         self.create_subscription(Path, '/plan', self.on_plan, 10)
+        self.twist, self.still_since = (0.0, 0.0), None
+        self.create_subscription(Odometry, '/odom', self.on_odom, 10)
         self.load_map_cli = self.create_client(LoadMap, '/map_server/load_map')
         from rclpy.qos import DurabilityPolicy as DP, QoSProfile as QP
         self.grid = None
@@ -430,9 +432,130 @@ class Ros(Node):
     def on_plan(self, msg):
         self.plan = [(p.pose.position.x, p.pose.position.y) for p in msg.poses[::3]]
 
+    def on_odom(self, m):
+        v, w = m.twist.twist.linear.x, m.twist.twist.angular.z
+        self.twist = (v, w)
+        if abs(v) + 0.3 * abs(w) > 0.02:
+            self.still_since = None
+        elif self.still_since is None:
+            self.still_since = time.time()
+
+    # ---- the path ahead drawn on the Brio feed (2026-10-30): two lines where the robot's left and right
+    # edges will travel, like a car's parking camera. Nav2's plan while driving (green), otherwise
+    # straight ahead bent by the current turn rate (grey). Rungs every 0.5 m.
+    GUIDE_HALF_W = 0.19
+
+    def guides(self):
+        now = time.time()
+        c = getattr(self, '_guides', None)
+        if c and now - c[0] < 0.2:
+            return c[1]
+        try:
+            out = self._compute_guides()
+        except Exception:
+            out = None
+        self._guides = (now, out)
+        return out
+
+    def _compute_guides(self):
+        import tags_common as tc
+        if not hasattr(self, '_KD'):
+            K, D, _ok = tc.load_intrinsics(1280, 720)
+            self._KD = (K, D)
+        K, D = self._KD
+        driving = self.nav_state == 'DRIVING' and len(self.plan) > 1
+        # Nav2's plan lives in the map frame; "straight ahead" needs no map (works before navigation is up)
+        frame, p = ('map', self.pose()) if driving else ('base_link', (0.0, 0.0, 0.0))
+        if p is None:
+            return None
+        T = tc.tf_to_mat(self.tf.lookup_transform('camera_optical', frame, Time(), timeout=Duration(seconds=0.05)).transform)
+        line = [(p[0], p[1])]
+        if driving:
+            pts = np.asarray(self.plan, float)
+            i = int(np.argmin(np.hypot(pts[:, 0] - p[0], pts[:, 1] - p[1])))
+            for q in pts[i + 1:]:
+                line.append((float(q[0]), float(q[1])))
+                if sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(line, line[1:])) > 3.0:
+                    break
+        else:
+            v, w = getattr(self, 'twist', (0.0, 0.0))
+            k = w / max(abs(v), 0.15) if abs(w) > 0.05 else 0.0       # curvature from the current turn
+            x, y, th = p
+            for _ in range(60):                                    # 3 m in 5 cm steps
+                th += k * 0.05
+                x, y = x + 0.05 * math.cos(th), y + 0.05 * math.sin(th)
+                line.append((x, y))
+        # resample every 5 cm, then offset to the robot's two edges
+        P = np.asarray(line, float)
+        seg = np.hypot(*np.diff(P, axis=0).T)
+        s_ = np.concatenate([[0], np.cumsum(seg)])
+        if s_[-1] < 0.3:
+            return None
+        ss = np.arange(0.0, min(s_[-1], 3.0), 0.05)
+        P = np.column_stack([np.interp(ss, s_, P[:, 0]), np.interp(ss, s_, P[:, 1])])
+        tng = np.gradient(P, axis=0)
+        tng /= np.maximum(np.linalg.norm(tng, axis=1, keepdims=True), 1e-9)
+        nrm = np.column_stack([-tng[:, 1], tng[:, 0]])
+
+        def project(Q):                                           # floor points (map) -> image fractions
+            C = (T[:3, :3] @ np.column_stack([Q, np.zeros(len(Q))]).T).T + T[:3, 3]
+            ok = (C[:, 2] > 0.15) & (np.abs(C[:, 0] / np.maximum(C[:, 2], 1e-6)) < 1.2) \
+                & (np.abs(C[:, 1] / np.maximum(C[:, 2], 1e-6)) < 1.0)
+            if ok.sum() < 2:
+                return None, ok
+            uv, _ = cv2.projectPoints(C[ok].reshape(-1, 1, 3), np.zeros(3), np.zeros(3), K, D)
+            return uv.reshape(-1, 2) / np.array([1280.0, 720.0]), ok
+        left, _ = project(P + nrm * self.GUIDE_HALF_W)
+        right, _ = project(P - nrm * self.GUIDE_HALF_W)
+        rungs = []
+        for d in (0.5, 1.0, 1.5, 2.0, 2.5):
+            j = int(round(d / 0.05))
+            if j < len(P):
+                ends, ok = project(np.array([P[j] + nrm[j] * self.GUIDE_HALF_W, P[j] - nrm[j] * self.GUIDE_HALF_W]))
+                if ends is not None and len(ends) == 2:
+                    rungs.append((d, ends))
+        if left is None and right is None:
+            return None
+        return {'left': left, 'right': right, 'rungs': rungs, 'driving': driving}
+
+    def with_guides(self, jpg):
+        """The Brio frame with the path guides drawn on (cached per frame; the clean frame on any error)."""
+        if not jpg:
+            return jpg
+        c = getattr(self, '_ov', None)
+        if c and c[0] is jpg:
+            return c[1]
+        out = jpg
+        try:
+            g = self.guides()
+            if g:
+                img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+                h, w = img.shape[:2]
+                col = (90, 235, 90) if g['driving'] else (200, 200, 200)
+                th = max(2, w // 240)
+                for side in ('left', 'right'):
+                    if g[side] is not None:
+                        pts = (g[side] * [w, h]).astype(np.int32).reshape(-1, 1, 2)
+                        cv2.polylines(img, [pts], False, (0, 0, 0), th + 2, cv2.LINE_AA)
+                        cv2.polylines(img, [pts], False, col, th, cv2.LINE_AA)
+                for d, ends in g['rungs']:
+                    a, b = (ends * [w, h]).astype(int)
+                    cv2.line(img, tuple(a), tuple(b), col, max(1, th - 1), cv2.LINE_AA)
+                    cv2.putText(img, f'{d:g} m', (int(b[0]) + 4, int(b[1]) + 4), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.35 * w / 480, col, 1, cv2.LINE_AA)
+                ok, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if ok:
+                    out = buf.tobytes()
+        except Exception:
+            out = jpg
+        self._ov = (jpg, out)
+        return out
+
     def on_status(self, msg):
         if msg.status_list:
             self.nav_state = NAV_STATE.get(msg.status_list[-1].status, 'IDLE')
+            if self.nav_state in ('GOAL REACHED', 'GOAL CANCELED'):
+                self.goal = None        # self.goal = the admin's own map goal, only while it is live
 
     def pose(self):
         try:
@@ -670,6 +793,9 @@ PRICE_IN, PRICE_OUT = 4e-6, 20e-6        # Claude Opus 5.5 $ per token, for the 
 # Legroom (camera, judged against the robot's own 38 cm-wide frame in view): while driving, slow down too
 # when the camera sees less than this much room, even with no named hazard (footprint 0.44 x 0.38 m).
 VISION_MARK_S = float(os.environ.get('VISION_MARK_S', '120'))       # s a camera-seen hazard stays on the map
+AUTO_GET_AROUND = os.environ.get('AUTO_GET_AROUND', '1') == '1'      # obstructed -> look + plan + move
+STALL_S = float(os.environ.get('STALL_S', '8'))                         # s still while "driving" = stalled
+GETAROUND_MAX = int(os.environ.get('GETAROUND_MAX', '3'))               # per goal
 VISION_BACKOFF_RANGE = float(os.environ.get('VISION_BACKOFF_RANGE', '1.6'))  # m: closer + ahead -> back off
 VISION_BACKOFF_M = float(os.environ.get('VISION_BACKOFF_M', '0.25'))          # m reversed (if the lidar allows)
 VISION_MARK_RANGE = float(os.environ.get('VISION_MARK_RANGE', '4'))  # m: farther floor points are too inexact
@@ -696,6 +822,33 @@ class Vision:
         self.man_lock = threading.Lock()             # one maneuver at a time
         threading.Thread(target=self._hazard_loop, daemon=True).start()
         threading.Thread(target=self._marks_loop, daemon=True).start()
+        threading.Thread(target=self._obstruct_loop, daemon=True).start()
+
+    def _obstruct_loop(self):
+        """Get around automatically (2026-10-30) when the robot is obstructed without the camera having
+        said so: standing still for STALL_S while Nav2 says it is driving, or a map-tap goal failing.
+        (Queue trips that fail go through fleet's 'blocked' look, which also gets around first.)"""
+        prev = None
+        while True:
+            time.sleep(0.5)
+            try:
+                st = self.ros.nav_state
+                failed = st == 'GOAL FAILED' and prev not in (None, 'GOAL FAILED')
+                prev = st
+                if not AUTO_GET_AROUND or handbrake_on() or self.man_lock.locked() or not command_health().get('key'):
+                    continue
+                ss = self.ros.still_since
+                if st == 'DRIVING' and ss and time.time() - ss > STALL_S:
+                    self.ros.still_since = time.time()           # one trigger per stall
+                    threading.Thread(target=self.get_around, daemon=True,
+                                     args=(f'not moving for {STALL_S:.0f} s although navigating', 'stalled')).start()
+                elif failed and self.ros.goal and not (Handler.queue and any(
+                        j.get('status') == 'driving' for j in Handler.queue.admin_view()['jobs'])):
+                    threading.Thread(target=self.get_around, daemon=True,
+                                     args=('navigation gave up on the goal (no path / could not get through)',
+                                           'goal failed')).start()
+            except Exception as e:
+                self.log(f'obstruction watch error: {e}')
 
     # ---- camera-seen hazards as obstacles for the planner
     def _marks_loop(self):
@@ -788,34 +941,34 @@ class Vision:
         self.marks.append({'exp': exp, 'x': cx, 'y': cy, 'what': what, 'pts': pts})
         return {**info, 'text': f"{what} at ({cx:.2f}, {cy:.2f}), {rng:.1f} m ahead [{seen_by}]"}
 
-    def get_around(self, m):
-        """A hazard close ahead while driving: pause the goal, look through every view and let Claude plan
-        a few lidar-checked moves around it (maneuver); if that can't run, just reverse a little if the
-        lidar allows. Then resume the goal: the planner routes around the mark. At most twice a goal,
-        30 s apart."""
+    def get_around(self, why, what='obstruction'):
+        """Obstructed (a hazard close ahead, standing still while driving, a failed goal): pause the goal,
+        look through every view and let Claude plan a few lidar-checked moves around it (maneuver); if that
+        can't run, just reverse a little if the lidar allows. Then resume the goal: the planner routes
+        around the marks. At most GETAROUND_MAX times a goal, 25 s apart."""
         goal = (self.ros.goal, getattr(self.ros, 'goal_yaw', 0.0))
         key = goal[0] if goal[0] else 'queue'
         bo = getattr(self, '_bo', {'key': None, 'n': 0, 't': 0.0})
         if bo['key'] != key:
             bo = {'key': key, 'n': 0, 't': 0.0}
-        if bo['n'] >= 2 or time.time() - bo['t'] < 30 or handbrake_on():
+        if bo['n'] >= GETAROUND_MAX or time.time() - bo['t'] < 25 or handbrake_on():
             return
         bo['n'] += 1
         bo['t'] = time.time()
         self._bo = bo
-        queued = Handler.queue.detour(120, f"{m['what']} ahead") if Handler.queue else False
+        queued = Handler.queue.detour(120, what) if Handler.queue else False
         if not queued:
             if not goal[0]:
                 return                                # nothing of ours is driving: leave it to Nav2
             self.ros.cancel_all_goals()
         time.sleep(0.6)                               # let the controller stop commanding first
         then, msg = 'resume', ''
-        r = self.maneuver(f"{m['what']} {m['range']:.1f} m ahead ({m['seen_by']})", goal=goal[0])
+        r = self.maneuver(why, goal=goal[0])
         if r.get('ok'):
             then, msg = r['result'].get('then', 'resume'), r['result'].get('message', '')
         else:
             moved, why = self.ros.back_off(VISION_BACKOFF_M)
-            self.log(f"👁 {m['what']} {m['range']:.1f} m ahead: " +
+            self.log(f"🧭 {why}: " +
                      (f'backed off {moved * 100:.0f} cm' if moved else f'not backing off ({why})') + ', re-planning around it')
         if queued:
             Handler.queue.end_detour(then, msg)
@@ -1016,7 +1169,8 @@ class Vision:
             if self.ros.nav_state != 'DRIVING':
                 return
             if close:
-                self.get_around(close)
+                self.get_around(f"{close['what']} {close['range']:.1f} m ahead ({close['seen_by']})",
+                                f"{close['what']} ahead")
             tight = []
             if room['clear_ahead_m'] is not None and room['clear_ahead_m'] < ROOM_MIN_AHEAD:
                 tight.append(f"only ~{room['clear_ahead_m']:.1f} m clear ahead")
@@ -1484,8 +1638,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not jpg and self.ros.cam_jpg and time.time() - self.ros.cam_t < 3.0:
                     jpg = self.ros.cam_jpg
                 if jpg and jpg is not last:
+                    out = self.ros.with_guides(jpg)          # the path ahead drawn on (vision gets clean frames)
                     self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: '
-                                     + str(len(jpg)).encode() + b'\r\n\r\n' + jpg + b'\r\n')
+                                     + str(len(out)).encode() + b'\r\n\r\n' + out + b'\r\n')
                     self.wfile.flush()
                     last = jpg
                 time.sleep(period)
@@ -1497,7 +1652,7 @@ class Handler(BaseHTTPRequestHandler):
         if not jpg and self.ros.cam_jpg and time.time() - self.ros.cam_t < 3.0:
             jpg = self.ros.cam_jpg          # camera_node owns the device: use its published preview
         if jpg:
-            self.send(200, 'image/jpeg', jpg)
+            self.send(200, 'image/jpeg', self.ros.with_guides(jpg))
         else:
             self.send(503, 'text/plain', err or b'warming up')
 

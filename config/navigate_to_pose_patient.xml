@@ -3,6 +3,8 @@
   more persistent. Loaded by launch/nav2.launch.py as bt_navigator's default_nav_to_pose_bt_xml.
   Changes from the stock tree:
     - 12 recovery rounds before the goal fails (stock 6)
+    - plans with "Straight" (Theta*, straight lines where the floor is clear) and falls back to the
+      selected planner (GridBased / NavFn) when that fails (2026-10-30)
     - recoveries in the order that frees this robot at a tight corner: clear the costmaps, back up
       0.25 m, wait 3 s (people walk off), then spin 90° (stock: clear, spin, wait 5 s, back up 0.30 m)
   Replanning at 1 Hz and the per-step clears are unchanged. Every recovery still checks collisions.
@@ -15,7 +17,10 @@
         <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+            <Fallback name="StraightElseGrid">
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="Straight" error_code_id="{compute_path_error_code}"/>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+            </Fallback>
             <Sequence>
               <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
               <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
