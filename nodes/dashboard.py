@@ -32,7 +32,7 @@ import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Path
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, PointCloud2, PointField
 from nav2_msgs.srv import LoadMap
 from action_msgs.msg import GoalStatus, GoalStatusArray
 from rclpy.duration import Duration
@@ -121,18 +121,28 @@ class Ros(Node):
 
         def on_img(m):
             self.cam_jpg = bytes(m.data)
-            self.cam_t = time.time()
+            self.cam_t, self.cam_stamp = time.time(), m.header.stamp
         self.create_subscription(CompressedImage, '/camera/image/compressed', on_img, qos_profile_sensor_data)
         # clean 960 px frame at 1 Hz for the vision features (camera_node only encodes it while subscribed)
         self.snap_jpg, self.snap_t = None, 0.0
 
         def on_snap(m):
-            self.snap_jpg, self.snap_t = bytes(m.data), time.time()
+            self.snap_jpg, self.snap_t, self.snap_stamp = bytes(m.data), time.time(), m.header.stamp
         self.create_subscription(CompressedImage, '/camera/snapshot/compressed', on_snap, qos_profile_sensor_data)
         # Nav2's own speed-limit channel (controller_server listens on `speed_limit`): the hazard spotter
         # slows the robot through it; 0.0 = no limit
         from nav2_msgs.msg import SpeedLimit
         self._SpeedLimit = SpeedLimit
+        # hazards the camera saw, marked for the planner on the slip watcher's channel (8 cm up, map frame:
+        # the lidar's rays at 21 cm never clear them), so Nav2 plans around them (2026-10-30)
+        self.pub_vmarks = self.create_publisher(PointCloud2, '/stuck_obstacles', 10)
+        from sensor_msgs.msg import LaserScan
+        self.scan, self.T_laser = None, None
+        self.create_subscription(LaserScan, '/scan_filtered', lambda m: setattr(self, 'scan', m), qos_profile_sensor_data)
+        from nav2_msgs.srv import ClearEntireCostmap
+        self._Clear = ClearEntireCostmap
+        self.clear_cli = [self.create_client(ClearEntireCostmap, '/local_costmap/clear_entirely_local_costmap'),
+                          self.create_client(ClearEntireCostmap, '/global_costmap/clear_entirely_global_costmap')]
         self.pub_speed = self.create_publisher(SpeedLimit, 'speed_limit', 10)
         self.create_subscription(GoalStatusArray, '/navigate_to_pose/_action/status', self.on_status, 10)
         # AprilTags (nodes/tag_map.py, 2026-10-30): what the camera sees, the readings tag_map trusted, and
@@ -168,6 +178,42 @@ class Ros(Node):
         self.goal = None
         return True
 
+    def snapshot_stamped(self, max_age=3.0):
+        """(jpeg, stamp) like snapshot(): the stamp says where the robot was when it was taken."""
+        now = time.time()
+        if self.snap_jpg and now - self.snap_t < max_age:
+            return self.snap_jpg, getattr(self, 'snap_stamp', None)
+        if self.cam_jpg and now - self.cam_t < max_age:
+            return self.cam_jpg, getattr(self, 'cam_stamp', None)
+        return None, None
+
+    def floor_points(self, pts, stamp):
+        """Image points (fractions of width/height) -> [(x, y, range)] on the floor in the map frame, as
+        the camera saw them at `stamp` (None where the ray doesn't hit the floor). Uses the calibrated
+        lens and the camera's TF (config/robot.env), so a wrong CAMERA_PITCH shifts the distance."""
+        import tags_common as tc
+        if not hasattr(self, '_KD'):
+            K, D, _ok = tc.load_intrinsics(1280, 720)
+            self._KD = (K, D)
+        K, D = self._KD
+        try:
+            t = self.tf.lookup_transform('map', 'camera_optical', Time.from_msg(stamp) if stamp else Time(),
+                                         timeout=Duration(seconds=0.2))
+        except Exception:
+            t = self.tf.lookup_transform('map', 'camera_optical', Time(), timeout=Duration(seconds=0.2))
+        T = tc.tf_to_mat(t.transform)
+        uv = np.array([[[min(max(fx, 0.0), 1.0) * 1280, min(max(fy, 0.0), 1.0) * 720]] for fx, fy in pts], np.float32)
+        out = []
+        for n in cv2.undistortPoints(uv, K, D).reshape(-1, 2):
+            d = T[:3, :3] @ np.array([n[0], n[1], 1.0])
+            if d[2] > -1e-3:
+                out.append(None)                     # at or above the horizon: never meets the floor
+                continue
+            k = -T[2, 3] / d[2]
+            p = T[:3, 3] + k * d
+            out.append((float(p[0]), float(p[1]), float(math.hypot(k * d[0], k * d[1]))))
+        return out
+
     def snapshot(self, max_age=3.0):
         """Newest camera frame for vision: the clean snapshot, else the (smaller, tag-annotated) preview."""
         now = time.time()
@@ -176,6 +222,79 @@ class Ros(Node):
         if self.cam_jpg and now - self.cam_t < max_age:
             return self.cam_jpg
         return None
+
+    def publish_marks(self, pts):
+        m = PointCloud2()
+        m.header.frame_id = 'map'
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.height, m.width = 1, len(pts)
+        m.fields = [PointField(name=n, offset=4 * i, datatype=PointField.FLOAT32, count=1) for i, n in enumerate('xyz')]
+        m.is_bigendian, m.point_step, m.is_dense = False, 12, True
+        m.row_step = 12 * len(pts)
+        m.data = np.asarray(pts, '<f4').tobytes() if len(pts) else b''
+        self.pub_vmarks.publish(m)
+
+    def lidar_points(self, frame='base_link'):
+        """The latest lidar scan as N x 2 points in base_link (default) or the map frame; None if none."""
+        s = self.scan
+        if s is None:
+            return None
+        if self.T_laser is None:
+            try:
+                tr = self.tf.lookup_transform('base_link', s.header.frame_id, Time(), timeout=Duration(seconds=0.3)).transform
+            except Exception:
+                return None
+            q = tr.rotation
+            self.T_laser = (tr.translation.x, tr.translation.y,
+                            math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+        r = np.asarray(s.ranges, float)
+        a = s.angle_min + s.angle_increment * np.arange(len(r)) + self.T_laser[2]
+        ok = np.isfinite(r) & (r > 0.05) & (r < 6.0)
+        pts = np.column_stack([self.T_laser[0] + r[ok] * np.cos(a[ok]), self.T_laser[1] + r[ok] * np.sin(a[ok])])
+        if frame == 'map':
+            p = self.pose()
+            if p is None:
+                return None
+            c, sn = math.cos(p[2]), math.sin(p[2])
+            pts = np.column_stack([p[0] + c * pts[:, 0] - sn * pts[:, 1], p[1] + sn * pts[:, 0] + c * pts[:, 1]])
+        return pts
+
+    def back_off(self, dist, v=0.08):
+        """Reverse straight up to `dist` m, only as far as the lidar shows room behind the true footprint
+        (nodes/unstick.py's check, 3 cm margin), re-checking the live scan at 10 Hz. There is no rear
+        bumper: the lidar is the only eye back there. Returns (metres planned, why not)."""
+        import unstick
+        pts = self.lidar_points()
+        if pts is None:
+            return 0.0, 'no lidar scan'
+        now = unstick.clearance(pts, 0, 0, 0)
+        limit = min(unstick.MARGIN, now - 0.004)
+        ok, d = 0.0, 0.0
+        while d < dist - 1e-9:
+            d += 0.02
+            if unstick.clearance(pts, -d, 0, 0) < limit:
+                break
+            ok = d
+        if ok < 0.08:
+            return 0.0, 'no room behind it (lidar)'
+        cmd = Twist()
+        cmd.linear.x = -v
+        end = time.time() + ok / v
+        while time.time() < end:
+            live = self.lidar_points()
+            if live is not None and unstick.clearance(live, -v * 0.3, 0, 0) < min(unstick.LIVE_MARGIN, limit):
+                break
+            self.pub_stop.publish(cmd)
+            time.sleep(0.1)
+        for _ in range(3):
+            self.pub_stop.publish(Twist())
+            time.sleep(0.05)
+        return ok, None
+
+    def clear_costmaps(self):
+        for c in self.clear_cli:
+            if c.service_is_ready():
+                c.call_async(self._Clear.Request())
 
     def set_speed_limit(self, percent=None):
         """Limit the Nav2 controller to `percent` % of its max speed; None lifts the limit."""
@@ -208,7 +327,7 @@ class Ros(Node):
         m.pose.position.x, m.pose.position.y = float(x), float(y)
         m.pose.orientation.z, m.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
         self.pub_goal.publish(m)
-        self.goal = (x, y)
+        self.goal, self.goal_yaw = (x, y), yaw
 
     def send_pose(self, x, y, yaw):
         m = PoseWithCovarianceStamped()
@@ -427,6 +546,10 @@ HAZARD_OFF_FILE = os.path.expanduser('~/.campus_bot/run/hazard_off')  # exists =
 PRICE_IN, PRICE_OUT = 4e-6, 20e-6        # Claude Opus 5.5 $ per token, for the dashboard's cost estimate
 # Legroom (camera, judged against the robot's own 38 cm-wide frame in view): while driving, slow down too
 # when the camera sees less than this much room, even with no named hazard (footprint 0.44 x 0.38 m).
+VISION_MARK_S = float(os.environ.get('VISION_MARK_S', '120'))       # s a camera-seen hazard stays on the map
+VISION_BACKOFF_RANGE = float(os.environ.get('VISION_BACKOFF_RANGE', '1.6'))  # m: closer + ahead -> back off
+VISION_BACKOFF_M = float(os.environ.get('VISION_BACKOFF_M', '0.25'))          # m reversed (if the lidar allows)
+VISION_MARK_RANGE = float(os.environ.get('VISION_MARK_RANGE', '4'))  # m: farther floor points are too inexact
 ROOM_MIN_AHEAD = float(os.environ.get('ROOM_MIN_AHEAD', '0.7'))
 ROOM_MIN_WIDTH = float(os.environ.get('ROOM_MIN_WIDTH', '0.5'))
 
@@ -446,7 +569,127 @@ class Vision:
         self.day, self.calls, self.cost = '', 0, 0.0
         self.last_hazard, self.limited, self.slow_until, self.inflight = None, False, 0.0, False
         self.logged = {}
+        self.marks, self.had_marks = [], False    # [{'exp', 'x', 'y', 'what', 'pts'}] hazards on the map
         threading.Thread(target=self._hazard_loop, daemon=True).start()
+        threading.Thread(target=self._marks_loop, daemon=True).start()
+
+    # ---- camera-seen hazards as obstacles for the planner
+    def _marks_loop(self):
+        while True:
+            time.sleep(1.0)
+            try:
+                now = time.time()
+                gone = [m for m in self.marks if m['exp'] <= now]
+                self.marks = [m for m in self.marks if m['exp'] > now]
+                for m in gone:
+                    self.log(f"👁 hazard mark expired: {m['what']}")
+                pts = [p for m in self.marks for p in m['pts']]
+                if pts or self.had_marks:
+                    self.ros.publish_marks(pts)
+                if self.had_marks and not pts:          # the low marks stay in the 3D costmaps until cleared
+                    self.ros.clear_costmaps()
+                self.had_marks = bool(pts)
+            except Exception as e:
+                self.log(f'hazard marks error: {e}')
+
+    def scan(self):
+        """One hazard look on demand (CHECK PATH): marks medium/high hazards whatever the robot is doing."""
+        jpg, stamp = self.ros.snapshot_stamped()
+        if jpg is None:
+            return {'ok': False, 'msg': 'no camera frame (is the mast camera running?)'}
+        res, err = self.ask('hazard', {'state': 'standing still, about to drive forward'}, timeout=30, jpg=jpg)
+        if not res:
+            return {'ok': False, 'msg': f'vision: {err}'}
+        self.note_room(res)
+        marked, skipped = [], []
+        for h in res.get('hazards', []):
+            if h.get('severity') not in ('medium', 'high'):
+                skipped.append(f"{h.get('what')} (minor)")
+                continue
+            m = self.mark(h, stamp)
+            (marked if m else skipped).append(m['text'] if m else f"{h.get('what')} (couldn't place it on the floor)")
+        msg = ('👁 marked: ' + '; '.join(marked) + f': the planner will go around for {VISION_MARK_S:.0f} s'
+               if marked else '👁 nothing to mark: ' + (res.get('summary') or 'path looks clear'))
+        if skipped:
+            msg += ' · not marked: ' + '; '.join(skipped)
+        self.log(msg)
+        return {'ok': True, 'msg': msg, 'marked': marked, 'hazards': res.get('hazards', [])}
+
+    def clear_marks(self):
+        n, self.marks = len(self.marks), []
+        return n
+
+    def mark(self, h, stamp):
+        """Put one hazard (with x_left/x_right/y_floor from the vision answer) on the map. Returns a
+        description, or None when it can't be placed (above the horizon, too far, no TF)."""
+        try:
+            xl, xr, yf = (float(h[k]) for k in ('x_left', 'x_right', 'y_floor'))
+        except (KeyError, TypeError, ValueError):
+            return None
+        xl, xr = min(xl, xr), max(xl, xr)
+        fp = self.ros.floor_points([(xl, yf), (xr, yf), ((xl + xr) / 2, yf)], stamp)
+        if any(p is None for p in fp) or fp[2][2] > VISION_MARK_RANGE or fp[2][2] < 0.2:
+            return None
+        (ax, ay, _), (bx, by, _), (cx, cy, rng) = fp
+        w = math.hypot(bx - ax, by - ay)
+        if w > 2.0:                                   # a "hazard" 2 m wide is a misread: keep its middle
+            ax, ay = cx + (ax - cx) * 1.0 / w, cy + (ay - cy) * 1.0 / w
+            bx, by = cx + (bx - cx) * 1.0 / w, cy + (by - cy) * 1.0 / w
+        # a band from its left to its right edge, 20 cm deep (away from the camera), every 5 cm, 8 cm up
+        cam = self.ros.pose()
+        ux, uy = ((cx - cam[0]) / max(rng, 1e-3), (cy - cam[1]) / max(rng, 1e-3)) if cam else (0.0, 0.0)
+        n = max(2, int(math.hypot(bx - ax, by - ay) / 0.05) + 1)
+        pts = [(ax + (bx - ax) * i / (n - 1) + ux * dd, ay + (by - ay) * i / (n - 1) + uy * dd, 0.08)
+               for i in range(n) for dd in (0.0, 0.05, 0.10, 0.15, 0.20)]
+        # hybrid: lidar returns near the camera's estimate pin it down (legs often show as a few points);
+        # none means the lidar can't see it at all, which is exactly when the mark matters
+        lid = self.ros.lidar_points('map')
+        near = []
+        if lid is not None and len(lid):
+            band = np.asarray([p[:2] for p in pts])
+            dmin = np.min(np.hypot(lid[:, None, 0] - band[None, :, 0], lid[:, None, 1] - band[None, :, 1]), axis=1)
+            near = lid[dmin < 0.35]
+        if len(near):
+            pts += [(float(px), float(py), 0.08) for px, py in near]
+            cx, cy = float(np.mean(near[:, 0])), float(np.mean(near[:, 1]))
+        seen_by = f'camera + lidar ({len(near)} pts)' if len(near) else 'camera only: the lidar can\'t see it'
+        exp = time.time() + VISION_MARK_S
+        what = h.get('what', '?')
+        info = {'what': what, 'x': cx, 'y': cy, 'range': rng, 'seen_by': seen_by,
+                'bearing': math.atan2(cy - cam[1], cx - cam[0]) - cam[2] if cam else 0.0}
+        for m in self.marks:                          # seen again: refresh instead of piling up
+            if math.hypot(m['x'] - cx, m['y'] - cy) < 0.4:
+                m.update(exp=exp, x=cx, y=cy, what=what, pts=pts)
+                return {**info, 'text': f"{what} still at ({cx:.2f}, {cy:.2f}) [{seen_by}]"}
+        self.marks.append({'exp': exp, 'x': cx, 'y': cy, 'what': what, 'pts': pts})
+        return {**info, 'text': f"{what} at ({cx:.2f}, {cy:.2f}), {rng:.1f} m ahead [{seen_by}]"}
+
+    def back_off(self, m):
+        """A hazard close ahead while driving: pause the goal, reverse a little if the lidar allows, then
+        resume it. The planner then routes around the mark instead of nosing into the gap. At most twice
+        a goal, 30 s apart."""
+        goal = (self.ros.goal, getattr(self.ros, 'goal_yaw', 0.0))
+        key = goal[0] if goal[0] else 'queue'
+        bo = getattr(self, '_bo', {'key': None, 'n': 0, 't': 0.0})
+        if bo['key'] != key:
+            bo = {'key': key, 'n': 0, 't': 0.0}
+        if bo['n'] >= 2 or time.time() - bo['t'] < 30 or handbrake_on():
+            return
+        bo['n'] += 1
+        bo['t'] = time.time()
+        self._bo = bo
+        secs = VISION_BACKOFF_M / 0.08 + 2.0
+        queued = Handler.queue.detour(secs, f"{m['what']} ahead") if Handler.queue else False
+        if not queued:
+            if not goal[0]:
+                return                                # nothing of ours is driving: leave it to Nav2
+            self.ros.cancel_all_goals()
+        time.sleep(0.6)                               # let the controller stop commanding first
+        moved, why = self.ros.back_off(VISION_BACKOFF_M)
+        self.log(f"👁 {m['what']} {m['range']:.1f} m ahead: " +
+                 (f'backed off {moved * 100:.0f} cm, re-planning around it' if moved else f'not backing off ({why}), re-planning around it'))
+        if not queued:
+            self.ros.send_goal(goal[0][0], goal[0][1], goal[1])
 
     @staticmethod
     def hazard_on():
@@ -475,9 +718,9 @@ class Vision:
             self.calls += 1
             return True
 
-    def ask(self, mode, context=None, timeout=45):
+    def ask(self, mode, context=None, timeout=45, jpg=None):
         """One look through the camera: (result dict, None) or (None, why). Never raises."""
-        jpg = self.ros.snapshot()
+        jpg = jpg or self.ros.snapshot()
         if jpg is None:
             return None, 'no camera frame (is the mast camera running?)'
         if not command_health().get('key'):
@@ -510,7 +753,9 @@ class Vision:
         return {'hazard_on': self.hazard_on(), 'calls_today': self.calls, 'cap': VISION_DAILY_CAP,
                 'cost_today': round(self.cost, 2), 'slowed': self.limited,
                 'last_hazard': lh if lh and time.time() - lh['t'] < 120 else None,
-                'room': lr if lr and time.time() - lr['t'] < 120 else None}
+                'room': lr if lr and time.time() - lr['t'] < 120 else None,
+                'marks': [[round(m['x'], 2), round(m['y'], 2), m['what'][:40], int(m['exp'] - time.time())]
+                          for m in self.marks]}
 
     def _hazard_loop(self):
         last = 0.0
@@ -533,12 +778,26 @@ class Vision:
 
     def _check(self):
         try:
-            res, _err = self.ask('hazard', {'state': 'driving autonomously to a goal'}, timeout=20)
-            if not res or self.ros.nav_state != 'DRIVING':
+            jpg, stamp = self.ros.snapshot_stamped()
+            if jpg is None:
+                return
+            res, _err = self.ask('hazard', {'state': 'driving autonomously to a goal'}, timeout=20, jpg=jpg)
+            if not res:
                 return
             room = self.note_room(res)
             hz = [h for h in res.get('hazards', [])
                   if h.get('severity') in ('medium', 'high') and h.get('distance') != 'over_3m']
+            close = None
+            for h in hz:                              # on the map, so Nav2 steers around it
+                m = self.mark(h, stamp)
+                if m:
+                    self.log(f"👁 hazard marked on the map: {m['text']}: planning around it for {VISION_MARK_S:.0f} s")
+                    if m['range'] < VISION_BACKOFF_RANGE and abs(tc_wrap(m['bearing'])) < math.radians(30):
+                        close = m if close is None or m['range'] < close['range'] else close
+            if self.ros.nav_state != 'DRIVING':
+                return
+            if close:
+                self.back_off(close)
             tight = []
             if room['clear_ahead_m'] is not None and room['clear_ahead_m'] < ROOM_MIN_AHEAD:
                 tight.append(f"only ~{room['clear_ahead_m']:.1f} m clear ahead")
@@ -821,6 +1080,10 @@ NET = {'v4': '', 'v6': '', 'lan': '', 't': 0.0}
 HANDOFF = {}                     # one-time pass -> (admin session token, expiry)
 GIF = (b'GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00'
        b',\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;')
+
+
+def tc_wrap(a):
+    return (a + math.pi) % (2 * math.pi) - math.pi
 
 
 def tag_status(ros):
@@ -1312,6 +1575,14 @@ class Handler(BaseHTTPRequestHandler):
             self.vision.set_hazard(bool(body.get('on')))
             self.state.fit_msg = f'hazard spotter {"ON" if self.vision.hazard_on() else "OFF"}'
             self.json({'ok': True, 'on': self.vision.hazard_on()})
+            return
+        if self.path == '/api/vision/scan':            # one hazard look now (parked too): mark what it finds
+            self.json(self.vision.scan())
+            return
+        if self.path == '/api/vision/clear_marks':
+            n = self.vision.clear_marks()
+            self.state.fit_msg = f'👁 {n} hazard mark(s) cleared'
+            self.json({'ok': True, 'cleared': n})
             return
         if self.path == '/api/face/identify':
             # on-demand "who's at the crate" — used when loading a parcel (pickup). Log only.

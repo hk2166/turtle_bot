@@ -228,20 +228,31 @@ VISION = {
     'hazard': {
         'prompt': ROBOT + """
 
-The robot is driving forward right now. Report only hazards IN ITS PATH (the floor area straight ahead,
+The robot is driving forward right now. This robot can NEVER pass under a table or desk (its crate platform is too tall), so a table or desk in
+the path is always a hazard, even when the floor under it looks open. Most hazards here are table and chair
+LEGS and chair star-bases / wheels: thin or low, so the 2D lidar (21 cm up) sees them badly or not at all.
+Report only hazards IN ITS PATH (the floor area straight ahead,
 roughly the middle of the image) that the lidar might miss. Do not report walls, desks or people standing
 upright (the lidar sees those), or things clearly off to the side. If nothing qualifies, path_clear is true
-and hazards is empty. Be conservative: a false alarm only slows the robot briefly, but don't invent hazards.""",
+and hazards is empty. Be conservative: a false alarm makes the robot slow down and steer around the spot,
+so don't invent hazards.
+
+Where each hazard is in THIS image, as fractions of the image (0,0 = top-left corner, 1,1 = bottom-right):
+x_left / x_right = its left and right edges; y_floor = the height in the image where its base touches the
+floor (for an overhang: where the floor directly under its front edge is; for a drop or step: its near edge).
+The robot uses these to mark the spot on its map and plan around it, so be as exact as you can.""",
         'schema': {'type': 'object', 'properties': {
             'path_clear': {'type': 'boolean'},
             'hazards': {'type': 'array', 'items': {'type': 'object', 'properties': {
                 'what': {'type': 'string'},
-                'kind': {'type': 'string', 'enum': ['low_floor_object', 'overhang', 'glass_or_mirror',
+                'kind': {'type': 'string', 'enum': ['table_or_chair_leg', 'table_or_desk', 'low_floor_object', 'overhang', 'glass_or_mirror',
                                                     'liquid_or_slippery', 'drop_or_step', 'other']},
                 'where': {'type': 'string', 'enum': ['ahead', 'ahead_left', 'ahead_right']},
                 'distance': {'type': 'string', 'enum': ['under_1m', '1_to_3m', 'over_3m']},
-                'severity': {'type': 'string', 'enum': ['low', 'medium', 'high']}},
-                'required': ['what', 'kind', 'where', 'distance', 'severity'], 'additionalProperties': False}},
+                'severity': {'type': 'string', 'enum': ['low', 'medium', 'high']},
+                'x_left': {'type': 'number'}, 'x_right': {'type': 'number'}, 'y_floor': {'type': 'number'}},
+                'required': ['what', 'kind', 'where', 'distance', 'severity', 'x_left', 'x_right', 'y_floor'],
+                'additionalProperties': False}},
             'summary': {'type': 'string'}, **ROOM},
             'required': ['path_clear', 'hazards', 'summary', *ROOM], 'additionalProperties': False},
     },

@@ -471,6 +471,21 @@ class Queue:
                      f'after {TRIP_TRIES} tries')
         self._vision_async('blocked', active)
 
+    def detour(self, secs, what):
+        """The camera saw something close ahead (dashboard Vision): stop this attempt, let the robot back
+        off for `secs`, then the same trip is sent again (not counted as a failed try), and the planner
+        routes around the hazard now marked on the map. False when no queue trip is driving."""
+        with self.lock:
+            active = next((j for j in self.jobs if j['status'] == 'driving'), None)
+            if active is None:
+                return False
+            self.nav.cancel()
+            active['status'], active['started'] = 'waiting', None
+            active['not_before'] = time.time() + secs
+            active['note'] = f'backing off: {what}'
+            self._save()
+            return True
+
     def blocked_now(self, what):
         """The slip watcher (nodes/slip_watch.py) saw the robot pushing against something Nav2 can't see:
         stop this attempt now and handle it like a blocked path. False when no queue trip is driving."""

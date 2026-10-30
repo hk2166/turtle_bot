@@ -167,7 +167,9 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
    <button onclick="whosThere()" title="face-identify who is at the robot now (use when loading a parcel). Logs only — never blocks a delivery.">👤 WHO'S THERE</button>
    <button onclick="cmdFromMission()" title="give the robot a spoken or typed command (opens QUEUE & PLACES)">🎤 COMMAND</button>
    <button onclick="whatSee()" title="one look through the mast camera: Claude describes the scene (a cent or two)">👁 WHAT DO YOU SEE?</button>
-   <button id="hazb" onclick="toggleHazard()" title="while Nav2 drives: a look every 3 s for things the lidar can't see (low objects, overhangs, glass); slows the robot briefly. Advisory only.">⚠ HAZARD SPOTTER</button>
+   <button id="hazb" onclick="toggleHazard()" title="while Nav2 drives: a look every 3 s for things the lidar can't see (low objects, overhangs, glass); slows the robot and marks them on the map so it steers around them">⚠ HAZARD SPOTTER</button>
+   <button onclick="checkPath()" title="one look now (works parked): hazards it sees go on the map for 2 min and the planner goes around them">👁 CHECK PATH</button>
+   <button id="clrmarks" onclick="clearMarks()" style="display:none" title="remove the camera's hazard marks from the map (if it marked something that isn't there)">✕ CLEAR MARKS</button>
    <small id="fit"></small>
   </div>
  </div>
@@ -534,6 +536,7 @@ function draw(){
   cx.strokeStyle='#ffffff';cx.setLineDash([3*L,3*L]);cx.lineWidth=1.5*L;cx.beginPath();
   cx.arc(a,b,ERASE_R*Math.hypot(M.A[0][0],M.A[1][0]),0,2*Math.PI);cx.stroke();cx.setLineDash([])}
  drawTags(L);
+ drawMarks(L);
  drawPlaces(L);
  if(fencePts.length){cx.strokeStyle='#ff5566';cx.setLineDash([4*L,3*L]);cx.lineWidth=2*L;cx.beginPath();
   fencePts.forEach((p,i)=>{const[a,b]=w2p(p[0],p[1]);i?cx.lineTo(a,b):cx.moveTo(a,b);});cx.stroke();
@@ -546,6 +549,16 @@ function drawTags(L){const T=S.tags;if(!T||!T.known)return;
   const on=(T.ids||[]).includes(String(id));cx.strokeStyle=cx.fillStyle=on?'#ffe14d':'#ff9f1a';
   cx.lineWidth=(on?2.5:1.5)*L;cx.fillRect(a-3.5*L,b-3.5*L,7*L,7*L);
   cx.beginPath();cx.moveTo(a,b);cx.lineTo(c,d);cx.stroke();cx.fillText(String(id),a+5*L,b-5*L)})}
+// hazards the camera put on the map (red ✕ with a label): the planner goes around them until they expire
+function drawMarks(L){const mk=S.vision&&S.vision.marks;if(!mk||!mk.length)return;
+ cx.strokeStyle=cx.fillStyle='#ff5566';cx.lineWidth=2.5*L;cx.font=`${10*L}px monospace`;
+ mk.forEach(([x,y,what,ttl])=>{const[a,b]=w2p(x,y),r=6*L;
+  cx.beginPath();cx.moveTo(a-r,b-r);cx.lineTo(a+r,b+r);cx.moveTo(a+r,b-r);cx.lineTo(a-r,b+r);cx.stroke();
+  cx.fillText(`${what} · ${ttl}s`,a+8*L,b+4*L)})}
+async function checkPath(){log('👁 checking the path…');
+ let r;try{r=await(await post('/api/vision/scan',{})).json()}catch(e){r={ok:false,msg:'no answer'}}
+ if(!r.ok)log(r.msg||'vision: no answer')}
+async function clearMarks(){const r=await(await post('/api/vision/clear_marks',{})).json();log(`👁 ${r.cleared} hazard mark(s) cleared`)}
 async function handleTap(e){
  if(!M)return;
  const r=cv.getBoundingClientRect();const[x,y]=p2w(e.clientX-r.left,e.clientY-r.top);
@@ -823,6 +836,7 @@ setInterval(async()=>{try{
  if(s.fit&&s.fit!=lastFit){log(s.fit);lastFit=s.fit}
  {const te=s.tags&&s.tags.event;if(te&&te!=lastTagEv){if(lastTagEv!==null||s.tags.event_ago<10)log('📍 '+te);lastTagEv=te}}      // queue + vision events (hazards, blocked, arrivals)
  document.getElementById('hazb').classList.toggle('on',!!(s.vision&&s.vision.hazard_on));
+ document.getElementById('clrmarks').style.display=s.vision&&s.vision.marks&&s.vision.marks.length?'':'none';
  paintBrake();
  document.getElementById('fit').textContent=s.job||s.fit||'';
  const sel=document.getElementById('mapsel');
