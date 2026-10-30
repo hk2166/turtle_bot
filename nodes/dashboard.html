@@ -84,6 +84,8 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
 #erasefb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #amic.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #hazb.on{background:var(--warn);color:#140d04;border-color:var(--warn)}
+#brakeb{font-weight:bold}
+#brakeb.on{background:var(--bad);color:#140404;border-color:var(--bad);box-shadow:0 0 10px var(--bad)}
 #pinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
 #unpinb.armed{background:var(--bad);color:#140404;border-color:var(--bad)}
 #movepinb.armed{background:var(--warn);color:#140d04;border-color:var(--warn)}
@@ -142,6 +144,7 @@ select{background:#0f1d0f;color:var(--fg);border:1px solid var(--line);font:inhe
   <div id="mapwrap"><canvas id="map"></canvas></div>
   <div class="row">
    <button id="stop">■ STOP</button>
+   <button id="brakeb" onclick="toggleBrake()" title="park the robot: nothing makes it move (goals, HOME, manual drive, queue trips, voice, auto-relocation) until released. Survives restarts.">🅿 HANDBRAKE</button>
    <button onclick="goHome()" title="drive to the home spot (default: nearest open spot to where mapping started)">⌂ HOME</button>
    <button onclick="setHome()" title="save the robot's current spot as home for this map">⌂ SET HOME</button>
    <button id="setpose" onclick="armPoseBtn()" title="then press at the robot's spot and DRAG toward where it faces">✛ SET POSE</button>
@@ -608,6 +611,14 @@ async function whatSee(spoken){log('vision: looking…');
  if(!r.ok){log('vision: '+(r.error||'no answer'));return}
  log('👁 '+r.text);if(spoken&&window.speechSynthesis)try{speechSynthesis.speak(new SpeechSynthesisUtterance(r.text))}catch(e){}
  return r.text}
+async function toggleBrake(){
+ const on=!(S&&S.handbrake);
+ if(!on&&!confirm('Release the handbrake? The robot can move again (queue trips still wait for RESUME QUEUE).'))return;
+ const r=await(await post('/api/handbrake',{on})).json();
+ log(r.on?'🅿 HANDBRAKE ON: the robot will not move':'🅿 handbrake released');
+ S.handbrake=r.on;paintBrake()}
+function paintBrake(){const b=document.getElementById('brakeb'),on=!!(S&&S.handbrake);
+ b.classList.toggle('on',on);b.textContent=on?'🅿 PARKED — RELEASE':'🅿 HANDBRAKE'}
 async function toggleHazard(){const on=!(S.vision&&S.vision.hazard_on);
  const r=await(await post('/api/vision/hazard',{on})).json();log('hazard spotter '+(r.on?'ON':'OFF'))}
 async function aSend(voice){
@@ -706,6 +717,7 @@ function renderReady(s){
      s.pose?'robot is localized':'robot does not know where it is — SET POSE / RESET POSE');
  add(s.cam_ok?'ok':'bad','Cam',s.cam_ok?'live':'off',
      s.cam_ok?'camera streaming':'no camera frames in the last 3 s');
+ if(s.handbrake)add('warn','Brake','PARKED','handbrake on: the robot will not move until you release it');
  const v=s.vision||{}, cm=s.commands||{};
  if(!cm.key)add('warn','Vision','no key','no Anthropic API key: voice commands and vision are off');
  else if(v.last_hazard)add('warn','Vision','⚠ '+v.last_hazard.text.slice(0,28),
@@ -753,6 +765,7 @@ setInterval(async()=>{try{
  if(s.job&&s.job!=lastJob){log(s.job);lastJob=s.job}
  if(s.fit&&s.fit!=lastFit){log(s.fit);lastFit=s.fit}      // queue + vision events (hazards, blocked, arrivals)
  document.getElementById('hazb').classList.toggle('on',!!(s.vision&&s.vision.hazard_on));
+ paintBrake();
  document.getElementById('fit').textContent=s.job||s.fit||'';
  const sel=document.getElementById('mapsel');
  const mapsNow=JSON.stringify(s.maps||[]);

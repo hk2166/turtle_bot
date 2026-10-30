@@ -43,6 +43,7 @@ except ImportError:
 ACTIVE = (GoalStatus.STATUS_ACCEPTED, GoalStatus.STATUS_EXECUTING, GoalStatus.STATUS_CANCELING)
 # touched every second by the dashboard's queue while the robot waits for a caller at their place
 HOLD_FILE = os.path.expanduser('~/.campus_bot/run/hold_position')
+HANDBRAKE_FILE = os.path.expanduser('~/.campus_bot/run/handbrake')   # exists = parked (dashboard)
 
 
 def sector_mins(msg):
@@ -141,6 +142,8 @@ class AutoClear(Node):
         return None
 
     def held(self):
+        if os.path.exists(HANDBRAKE_FILE):        # dashboard 🅿 HANDBRAKE: never relocate (2026-10-30)
+            return True
         try:
             return time.time() - os.path.getmtime(HOLD_FILE) < 5.0
         except OSError:

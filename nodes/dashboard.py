@@ -342,6 +342,47 @@ def face_health():
     return _face['health']
 
 
+# 🅿 HANDBRAKE (2026-10-30): a parked robot must not move, whoever asks. A file, so it survives restarts
+# and reboots, and the other nodes (auto_clear, unstick) can check it too. While it exists: the queue
+# dispatches nothing, map goals / HOME / manual drive / voice trips are refused, and brake_guard cancels
+# any Nav2 goal that starts anyway (RViz, tools/goto.py, ...). Standing still, the DM542s keep holding
+# torque, so the wheels resist being pushed. Not a safety-rated e-stop: a program writing /cmd_vel directly
+# (tools/teleop_keys.py, drive_hold.py) isn't stopped by it; the master switch / an e-stop is.
+HANDBRAKE_FILE = os.path.expanduser('~/.campus_bot/run/handbrake')
+
+
+def handbrake_on():
+    return os.path.exists(HANDBRAKE_FILE)
+
+
+def set_handbrake(on):
+    if on:
+        os.makedirs(os.path.dirname(HANDBRAKE_FILE), exist_ok=True)
+        with open(HANDBRAKE_FILE, 'w') as f:
+            f.write(f'parked from the dashboard at {time.strftime("%F %T")}\n')
+    else:
+        try:
+            os.remove(HANDBRAKE_FILE)
+        except OSError:
+            pass
+
+
+def brake_guard(ros, log):
+    """While parked: cancel any Nav2 goal that becomes active and send a stop."""
+    last_log = 0.0
+    while True:
+        time.sleep(0.25)
+        try:
+            if handbrake_on() and ros.nav_state in ('DRIVING', 'GOAL ACCEPTED'):
+                ros.cancel_all_goals()
+                ros.pub_stop.publish(Twist())
+                if time.time() - last_log > 5:
+                    last_log = time.time()
+                    log('🅿 handbrake: a goal tried to move the robot and was cancelled')
+        except Exception as e:
+            log(f'handbrake guard error: {e}')
+
+
 _cmdh = {'t': 0.0, 'h': {'ok': False}}
 
 
@@ -933,7 +974,8 @@ class Handler(BaseHTTPRequestHandler):
                          'h': shape[0], 'w': shape[1]},
                  'places': fleet.load_places(AREA), 'queue': self.queue.admin_view(),
                  'cam_ok': self.ros.cam_jpg is not None and time.time() - self.ros.cam_t < 3.0,
-                 'face': face_health(), 'commands': command_health(), 'vision': self.vision.status(), **s}
+                 'face': face_health(), 'commands': command_health(), 'vision': self.vision.status(),
+                 'handbrake': handbrake_on(), **s}
             self.send(200, 'application/json', json.dumps(d).encode())
         elif self.path.startswith('/api/logs'):
             name = (self.path.split('f=')[1].split('&')[0] if 'f=' in self.path else 'nav')
@@ -990,6 +1032,7 @@ class Handler(BaseHTTPRequestHandler):
             admin = self.is_admin()
             why = self.command_allowed(str(body.get('device') or ''), admin)
             if why:
+                print(time.strftime('%H:%M:%S'), 'command refused:', why, flush=True)   # used to be silent
                 self.json({'ok': False, 'error': why})
                 return
             places = [{'id': p['id'], 'name': p['name']} for p in fleet.load_places(AREA)]
@@ -1003,6 +1046,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/api/command/run':
             plan = body.get('plan') or {}
             admin = self.is_admin()
+            if handbrake_on():
+                self.json({'ok': False, 'msg': '🅿 the robot is parked (handbrake on): ask the admin to release it'})
+                return
             if not plan.get('understood'):
                 self.json({'ok': False, 'msg': 'nothing to run: say the command again'})
                 return
@@ -1040,6 +1086,28 @@ class Handler(BaseHTTPRequestHandler):
         # ---- admin only
         if not self.is_admin():
             self.send(401, 'text/plain', b'admin login required')
+            return
+        if self.path == '/api/handbrake':
+            on = bool(body.get('on'))
+            set_handbrake(on)
+            if on:
+                self.queue.admin_took_control('handbrake')   # a trip in progress goes back in line
+                self.ros.cancel_all_goals()
+                for _ in range(5):
+                    self.ros.pub_stop.publish(Twist())
+                msg = ('🅿 HANDBRAKE ON: the robot will not move (goals, HOME, manual drive, queue trips, '
+                       'auto-relocation and wedge escape are all held)')
+            else:
+                msg = '🅿 handbrake released: queue trips wait until you RESUME QUEUE'
+            self.state.fit_msg = msg
+            print(time.strftime('%H:%M:%S'), msg, flush=True)
+            self.json({'ok': True, 'on': handbrake_on()})
+            return
+        moves = self.path in ('/api/goal', '/api/home') or (self.path == '/api/drive' and (
+            float(body.get('vx', 0) or 0) or float(body.get('wz', 0) or 0)))
+        if moves and handbrake_on():
+            self.state.fit_msg = '🅿 handbrake is on: release it to move the robot'
+            self.json({'ok': False, 'msg': 'handbrake is on'})
             return
         # manual drive: only a real motion command takes control. The manual tab streams zeros while
         # nothing is held, and each one used to cancel the queue's trip and re-pause the queue.
@@ -1409,7 +1477,11 @@ def main():
                                 lambda: ros.pose() is not None and not pid_alive('slam'), qlog,
                                 snap_fn=lambda x, y: snap_reachable(ros, x, y) or snap_goal(x, y),
                                 face_fn=face_identify,
-                                vision_fn=lambda mode, ctx: Handler.vision.ask(mode, ctx))
+                                vision_fn=lambda mode, ctx: Handler.vision.ask(mode, ctx),
+                                brake_fn=handbrake_on)
+    threading.Thread(target=brake_guard, args=(ros, qlog), daemon=True).start()
+    if handbrake_on():
+        print('🅿 handbrake is ON (parked): the robot will not move until it is released', flush=True)
     if not fleet.Auth.configured():
         print('no admin password yet: python3 tools/set_admin_password.py (the call page works anyway)',
               flush=True)

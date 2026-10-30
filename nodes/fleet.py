@@ -210,7 +210,8 @@ class Navigator:
 
 
 class Queue:
-    def __init__(self, ros, nav, area_fn, home_fn, ready_fn, log_fn, snap_fn=None, face_fn=None, vision_fn=None):
+    def __init__(self, ros, nav, area_fn, home_fn, ready_fn, log_fn, snap_fn=None, face_fn=None, vision_fn=None,
+                 brake_fn=None):
         self.ros, self.nav = ros, nav
         self.area_fn, self.home_fn, self.ready_fn, self.log = area_fn, home_fn, ready_fn, log_fn
         self.snap_fn = snap_fn        # (x, y) -> (x', y', moved) on currently reachable floor, or None
@@ -220,6 +221,8 @@ class Queue:
         # vision_fn(mode, context) -> (result dict or None, error): one look through the mast camera by
         # Claude (nodes/command_service.py). Seconds per look, so only for slow decisions, in a thread.
         self.vision_fn = vision_fn
+        # brake_fn() -> True while the dashboard's 🅿 HANDBRAKE is on: nothing is dispatched (requests wait)
+        self.brake_fn = brake_fn or (lambda: False)
         self.lock = threading.RLock()
         self.jobs, self.paused, self.msg, self.homing = [], False, '', False
         self.want_home = False         # a trip ended: drive home once the robot is free (not only within 5 s)
@@ -262,6 +265,8 @@ class Queue:
         return waiting.index(job) + 1 + int(active) if job in waiting else 0
 
     def robot_status(self):
+        if self.brake_fn():
+            return 'parked'
         if self.paused:
             return 'paused'
         if not self.ready_fn():
@@ -656,7 +661,7 @@ class Queue:
                         self._finish(active, 'done', f'no GOT IT within {int(ARRIVE_WAIT)} s')
                     self._save()
                 return
-            if self.paused or not self.ready_fn() or not self.nav.ready():
+            if self.paused or self.brake_fn() or not self.ready_fn() or not self.nav.ready():   # 🅿 = no trips, no going home
                 return
             now = time.time()
             nxt = next((j for j in self.jobs if j['status'] == 'waiting' and now >= j.get('not_before', 0)), None)

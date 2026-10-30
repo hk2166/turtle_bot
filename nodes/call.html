@@ -195,7 +195,8 @@ async function confirmHere(){
  const r=await api('/api/trip/confirm',{id:active.id,who:nameEl.value.trim()});
  $('herebtn').disabled=false;if(!r.ok)alert(r.msg);poll()}
 
-const LABEL={ready:'robot ready',busy:'robot on a trip',paused:'queue paused by admin',offline:'robot offline'};
+const LABEL={ready:'robot ready',busy:'robot on a trip',paused:'queue paused by admin',offline:'robot offline',
+             parked:'🅿 robot parked (handbrake on): requests wait'};
 async function poll(){
  try{const d=await api('/api/queue?device='+encodeURIComponent(device));
   $('robot').textContent=LABEL[d.robot]||d.robot;$('robot').className=d.robot=='ready'?'':d.robot=='busy'?'warn':'badc';

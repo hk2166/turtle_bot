@@ -18,6 +18,7 @@ again). At most 3 escapes per goal, 20 s apart. Firmware bumper and 300 ms watch
 """
 import argparse
 import math
+import os
 import time
 
 import numpy as np
@@ -164,6 +165,8 @@ class Unstick(Node):
 
     # ---- decision
     def tick(self):
+        if os.path.exists(os.path.expanduser('~/.campus_bot/run/handbrake')):   # 🅿 parked: never drive
+            return
         now = time.monotonic()
         self.fails = [t for t in self.fails if now - t < 30.0]
         wedged = (self.goal_active and now - self.goal_since > 5.0 and self.still_since is not None
