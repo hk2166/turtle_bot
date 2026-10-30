@@ -397,13 +397,25 @@ def vision(mode, image_b64, context=None, images=None):
             'usage': {'in': u.input_tokens, 'out': u.output_tokens}, 'model': resp.model}
 
 
-# ------------------------------------------------------------------ speech-to-text (on the robot)
+# ------------------------------------------------------------------ speech-to-text
 # Browsers' built-in speech recognition sends the audio to Google (Chrome) or fails outright ("network" in
 # Brave and other non-Google Chromium builds, 2026-10-30). So the page records the audio and the robot
-# transcribes it with Whisper (faster-whisper, int8, CPU), offline: works in any browser, audio never
-# leaves the robot. Measured on the Pi with nav running, 2 threads: base.en ~360 MB peak, 11 s of speech
-# in 8.4 s; tiny.en ~280 MB, 5.1 s. The model lives in a worker PROCESS started on the first command and
-# ended after STT_IDLE s without one, so the memory goes back to zero when nobody uses voice.
+# transcribes it. Order (2026-10-30, Hemant): OpenAI, then Groq, then Whisper on the robot.
+#   - Cloud: keys OPENAI_API_KEY / GROQ_API_KEY from the environment or ~/.campus_bot/stt.env (0600, outside
+#     the repo; re-read on every request, so adding a key needs no restart). A provider without a key is
+#     skipped; one that errors or times out falls through to the next. Measured on an 11 s clip:
+#     Groq whisper-large-v3-turbo 0.4 s, OpenAI gpt-4o-transcribe 1.4 s.
+#   - On the robot: Whisper (faster-whisper, int8, CPU), offline. With nav running, 2 threads: base.en
+#     ~360 MB peak, 11 s of speech in 8.4 s; tiny.en ~280 MB, 5.1 s. The model lives in a worker PROCESS
+#     started on first use and ended after STT_IDLE s without one, so the memory goes back to zero.
+STT_KEYS_FILE = os.path.expanduser('~/.campus_bot/stt.env')
+STT_CLOUD = [   # (name, endpoint, key variable, model)
+    ('openai', 'https://api.openai.com/v1/audio/transcriptions', 'OPENAI_API_KEY',
+     os.environ.get('STT_OPENAI_MODEL', 'gpt-4o-transcribe')),
+    ('groq', 'https://api.groq.com/openai/v1/audio/transcriptions', 'GROQ_API_KEY',
+     os.environ.get('STT_GROQ_MODEL', 'whisper-large-v3-turbo')),
+]
+STT_CLOUD_TIMEOUT = float(os.environ.get('STT_CLOUD_TIMEOUT', '12'))
 STT_MODEL = os.environ.get('STT_MODEL', 'base.en')       # tiny.en: faster, a little worse on names
 STT_THREADS = int(os.environ.get('STT_THREADS', '2'))    # leave cores for navigation
 STT_IDLE = float(os.environ.get('STT_IDLE', '600'))
@@ -450,10 +462,65 @@ def _stt_reaper():
                 print(time.strftime('%H:%M:%S'), 'speech model unloaded (idle)', flush=True)
 
 
-def transcribe(audio_b64, mime='', places=None):
-    import base64
+def _stt_keys():
+    keys = {}
+    try:
+        with open(STT_KEYS_FILE) as f:
+            for line in f:
+                k, sep, v = line.strip().partition('=')
+                if sep and not k.startswith('#'):
+                    keys[k.strip()] = v.strip().strip('"\'')
+    except OSError:
+        pass
+    for _name, _url, var, _model in STT_CLOUD:
+        if os.environ.get(var, '').strip():
+            keys[var] = os.environ[var].strip()
+    return keys
+
+
+def _cloud_stt(url, key, model, audio, suffix, prompt):
+    """One OpenAI-compatible /audio/transcriptions call (OpenAI and Groq share the API). Raises on failure."""
+    import urllib.request
+    import uuid
+    b = uuid.uuid4().hex
+    mime = {'.mp4': 'audio/mp4', '.ogg': 'audio/ogg'}.get(suffix, 'audio/webm')
+    parts = []
+    for k, v in (('model', model), ('language', 'en'), ('prompt', prompt), ('response_format', 'json')):
+        parts.append(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+    parts.append(f'--{b}\r\nContent-Disposition: form-data; name="file"; filename="speech{suffix}"\r\n'
+                 f'Content-Type: {mime}\r\n\r\n'.encode() + audio + b'\r\n')
+    parts.append(f'--{b}--\r\n'.encode())
+    req = urllib.request.Request(url, data=b''.join(parts), method='POST', headers={
+        'Authorization': f'Bearer {key}', 'Content-Type': f'multipart/form-data; boundary={b}',
+        'User-Agent': 'campus-bot/1.0'})   # Groq's edge answers 403 to urllib's default User-Agent
+    with urllib.request.urlopen(req, timeout=STT_CLOUD_TIMEOUT) as r:
+        return (json.loads(r.read()).get('text') or '').strip()
+
+
+def _local_stt(audio, suffix, prompt):
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
+    with _stt['lock']:
+        if _stt['ex'] is None:
+            _stt['ex'] = ProcessPoolExecutor(1, mp_context=multiprocessing.get_context('spawn'),
+                                             initializer=_stt_init, initargs=(STT_MODEL, STT_THREADS, STT_DIR))
+            print(time.strftime('%H:%M:%S'), f'speech model {STT_MODEL} loading', flush=True)
+        _stt['last'] = time.time()
+        ex = _stt['ex']
+    try:
+        text = ex.submit(_stt_run, audio, suffix, prompt).result(timeout=90)
+    except Exception:
+        with _stt['lock']:                                # a broken worker: start fresh next time
+            if _stt['ex'] is ex:
+                ex.shutdown(wait=False, cancel_futures=True)
+                _stt['ex'] = None
+        raise
+    _stt['last'] = time.time()
+    return text
+
+
+def transcribe(audio_b64, mime='', places=None):
+    import base64
     t0 = time.time()
     if not audio_b64 or len(audio_b64) > MAX_AUDIO_B64:
         return {'ok': False, 'error': 'no audio' if not audio_b64 else 'recording too long'}
@@ -464,25 +531,26 @@ def transcribe(audio_b64, mime='', places=None):
     suffix = '.mp4' if 'mp4' in (mime or '') else '.ogg' if 'ogg' in (mime or '') else '.webm'
     names = ', '.join(str(p) for p in (places or [])[:40])
     prompt = 'Commands for an office delivery robot. ' + (f'Places and people: {names}.' if names else '')
-    with _stt['lock']:
-        if _stt['ex'] is None:
-            _stt['ex'] = ProcessPoolExecutor(1, mp_context=multiprocessing.get_context('spawn'),
-                                             initializer=_stt_init, initargs=(STT_MODEL, STT_THREADS, STT_DIR))
-            print(time.strftime('%H:%M:%S'), f'speech model {STT_MODEL} loading', flush=True)
-        _stt['last'] = time.time()
-        ex = _stt['ex']
-    try:
-        text = ex.submit(_stt_run, audio, suffix, prompt).result(timeout=90)
-    except Exception as e:
-        with _stt['lock']:                                # a broken worker: start fresh next time
-            if _stt['ex'] is ex:
-                ex.shutdown(wait=False, cancel_futures=True)
-                _stt['ex'] = None
-        return {'ok': False, 'error': f'speech recognition failed: {e.__class__.__name__}'}
-    _stt['last'] = time.time()
-    if not text:
-        return {'ok': False, 'error': "didn't hear anything: hold the phone closer and speak after the beep"}
-    return {'ok': True, 'text': text, 'ms': int((time.time() - t0) * 1000), 'model': STT_MODEL}
+    keys = _stt_keys()
+    engines = [(n, (lambda u=u, k=keys[v], m=m: _cloud_stt(u, k, m, audio, suffix, prompt)), f'{n} {m}')
+               for n, u, v, m in STT_CLOUD if keys.get(v)]
+    engines.append(('whisper', lambda: _local_stt(audio, suffix, prompt), f'robot whisper {STT_MODEL}'))
+    failed = []
+    for name, run, label in engines:
+        try:
+            text = run()
+        except Exception as e:
+            why = f'HTTP {e.code}' if hasattr(e, 'code') and isinstance(getattr(e, 'code'), int) \
+                else e.__class__.__name__
+            print(time.strftime('%H:%M:%S'), f'speech: {label} failed ({why}), trying the next', flush=True)
+            failed.append(f'{name}: {why}')
+            continue
+        if not text:
+            return {'ok': False, 'engine': label,
+                    'error': "didn't hear anything: hold the phone closer and speak after the beep"}
+        return {'ok': True, 'text': text, 'ms': int((time.time() - t0) * 1000), 'model': label,
+                'engine': label, 'fallbacks': failed}
+    return {'ok': False, 'error': 'speech recognition failed (' + '; '.join(failed) + ')'}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -498,7 +566,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/health':
             return self._send(200, {'ok': True, 'key_configured': bool(api_key()), 'model': MODEL,
                                     'effort': EFFORT,
-                                    'stt': {'model': STT_MODEL, 'loaded': _stt['ex'] is not None}})
+                                    'stt': {'order': [f'{n} {m}' for n, _u, v, m in STT_CLOUD
+                                                      if _stt_keys().get(v)] + [f'robot whisper {STT_MODEL}'],
+                                            'loaded': _stt['ex'] is not None}})
         self._send(404, {'ok': False, 'error': 'not found'})
 
     def do_POST(self):
@@ -514,7 +584,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/transcribe':
             r = transcribe(body.get('audio_b64'), str(body.get('mime') or ''), body.get('places'))
             print(time.strftime('%H:%M:%S'), 'transcribe', 'ok' if r.get('ok') else 'FAIL',
-                  json.dumps({'ms': r.get('ms'), 'text': r.get('text'), 'error': r.get('error')}), flush=True)
+                  json.dumps({'ms': r.get('ms'), 'engine': r.get('engine'), 'text': r.get('text'), 'error': r.get('error'),
+                              'fallbacks': r.get('fallbacks') or None}), flush=True)
             return self._send(200, r)
         if self.path == '/vision':
             r = vision(str(body.get('mode', '')), body.get('image_b64'), body.get('context'), body.get('images'))

@@ -629,7 +629,7 @@ const aDev=(()=>{try{let d=localStorage.getItem('cb_admin_device');
 const aMsg=(t,c)=>{const m=document.getElementById('acmdmsg');m.textContent=t||'';m.className=c||''};
 function cmdFromMission(){setView('queue',document.querySelectorAll('.vtab')[2]);
  setTimeout(()=>{document.getElementById('acmdtext').focus();aListen()},150)}
-// The page records; the robot transcribes (Whisper on the robot) — works in Brave too. The browser's own
+// The page records; the robot transcribes (OpenAI, then Groq, then Whisper on the robot) — works in Brave too. The browser's own
 // recognition is only the fallback when the robot's speech service is offline.
 let aMR=null, aStopT=null;
 const aStop=()=>{clearInterval(aStopT);if(aMR&&aMR.state!=='inactive')aMR.stop()};

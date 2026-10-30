@@ -1853,7 +1853,7 @@ class Handler(BaseHTTPRequestHandler):
                   flush=True)
             self.json(r)
             return
-        if self.path == '/api/command/transcribe':     # the page's recording -> text, Whisper on the robot
+        if self.path == '/api/command/transcribe':     # the page's recording -> text (OpenAI, Groq, else Whisper)
             dev = str(body.get('device') or '')[:64]
             last = Handler._stt_last.get(dev, 0)
             if not self.is_admin() and (not dev or time.time() - last < 2.0):

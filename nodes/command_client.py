@@ -35,7 +35,7 @@ def parse(text, places, requester=None):
 
 
 def transcribe(audio_b64, mime='', places=None, timeout=100):
-    """Speech -> text on the robot (Whisper in the command service). audio_b64: the browser's recording."""
+    """Speech -> text (command service: OpenAI, then Groq, then Whisper on the robot). audio_b64: the browser's recording."""
     return _call('/transcribe', {'audio_b64': audio_b64, 'mime': mime, 'places': places or []}, timeout=timeout)
 
 

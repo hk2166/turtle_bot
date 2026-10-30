@@ -143,10 +143,10 @@ async function cancelMine(){if(!mine)return;if(!confirm('Cancel your request?'))
  await api('/api/request/cancel',mine);poll()}
 async function gotIt(){if(!mine)return;await api('/api/request/done',mine);poll()}
 
-// ---- voice / typed commands. The page RECORDS the voice and the robot transcribes it (Whisper, on the
-// robot): works in any browser (Brave's built-in speech recognition always failed with "network") and
-// the audio never leaves the robot. Text -> plan by Claude -> a person confirms. Browsers only give a
-// page the microphone over https.
+// ---- voice / typed commands. The page RECORDS the voice and the robot transcribes it (OpenAI, then
+// Groq, then Whisper on the robot): works in any browser (Brave's built-in speech recognition always
+// failed with "network"). Text -> plan by Claude -> a person confirms. Browsers only give a page the
+// microphone over https.
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 let rec=null, plan=null, spoken=false, active=null;
 const canRecord=()=>window.isSecureContext&&navigator.mediaDevices&&window.MediaRecorder;

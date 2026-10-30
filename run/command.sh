@@ -10,6 +10,8 @@ VENV_PY="${LLM_VENV:-$HOME/.venvs/llm}/bin/python"
 PORT="${COMMAND_PORT:-8071}"
 KEY="$HOME/.campus_bot/anthropic.key"
 export STT_MODEL="${STT_MODEL:-base.en}" STT_THREADS="${STT_THREADS:-2}"   # from config/robot.env
+export STT_OPENAI_MODEL="${STT_OPENAI_MODEL:-gpt-4o-transcribe}" STT_GROQ_MODEL="${STT_GROQ_MODEL:-whisper-large-v3-turbo}"
+# Cloud speech keys: ~/.campus_bot/stt.env (read by the service itself; never in the repo)
 
 case "${1:-on}" in
   on)
